@@ -3,3 +3,4 @@ requests
 numpy
 soundfile
 tqdm
+PyYAML
