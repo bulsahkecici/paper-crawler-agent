@@ -1,0 +1,117 @@
+version: 1
+
+authority_tiers:
+  A1:
+    label: Turkish official primary source
+    evidence_priority: 100
+  A2:
+    label: International official technical source
+    evidence_priority: 95
+  A3:
+    label: Standards and technical specifications
+    evidence_priority: 92
+  B1:
+    label: Peer-reviewed review or systematic review
+    evidence_priority: 88
+  B2:
+    label: Peer-reviewed research article
+    evidence_priority: 84
+  C1:
+    label: Doctoral thesis
+    evidence_priority: 76
+  C2:
+    label: Masters thesis
+    evidence_priority: 70
+  D1:
+    label: Conference paper
+    evidence_priority: 64
+  D2:
+    label: Technical or sector report
+    evidence_priority: 60
+  E:
+    label: News or general web source
+    evidence_priority: 40
+  F:
+    label: Discovery-only record
+    evidence_priority: 20
+  X:
+    label: AI-generated note; never evidence
+    evidence_priority: 0
+
+source_classes:
+  TR_OFFICIAL:
+    default_tier: A1
+    domain_suffixes:
+      - gov.tr
+    known_domains:
+      - kgm.gov.tr
+      - resmigazete.gov.tr
+  INT_OFFICIAL:
+    default_tier: A2
+    domain_suffixes:
+      - .gov
+      - .gov.uk
+      - .admin.ch
+      - europa.eu
+      - .int
+    known_domains:
+      - fhwa.dot.gov
+      - tunnelsmanual.piarc.org
+      - piarc.org
+  STANDARD_BODY:
+    default_tier: A3
+    known_domains:
+      - iso.org
+      - standards.iteh.ai
+  PROFESSIONAL_ORGANIZATION:
+    default_tier: A2
+    known_domains:
+      - ita-aites.org
+      - piarc.org
+  UNIVERSITY_REPOSITORY:
+    default_tier: C2
+    domain_fragments:
+      - repository
+      - openaccess
+      - dspace
+      - tez.yok.gov.tr
+  ACADEMIC:
+    default_tier: B2
+    discovery_sources:
+      - openalex
+      - crossref
+      - doaj
+      - europe_pmc
+      - arxiv
+      - semantic_scholar
+      - core
+      - openaire
+  NEWS:
+    default_tier: E
+  DISCOVERY_ONLY:
+    default_tier: F
+  UNKNOWN:
+    default_tier: E
+
+document_type_tier_overrides:
+  REVIEW_ARTICLE: B1
+  JOURNAL_ARTICLE: B2
+  THESIS_PHD: C1
+  THESIS_MSC: C2
+  CONFERENCE_PAPER: D1
+  TECHNICAL_REPORT: D2
+  PREPRINT: D1
+  NEWS: E
+  WEB_PAGE: E
+  DISCOVERY_RECORD: F
+  AI_NOTE: X
+
+section_overrides:
+  "3":
+    preferred_tiers: [A1, A2, B2, C1, C2]
+  "4":
+    preferred_tiers: [A1, A2, A3, B1, B2, C1]
+  "5":
+    preferred_tiers: [A1, A2, A3, B1, B2, C1, C2]
+  "6":
+    preferred_tiers: [A1, A2, A3, B1, B2, C1, C2]
