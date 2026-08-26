@@ -80,7 +80,6 @@ def _merge_records(classic: list[Any], discovered: list[dict[str, Any]]) -> list
         if previous is None:
             merged[key] = dict(record)
             continue
-        # Prefer an acquired source path, richer abstract and explicit discovery provenance.
         current_rank = (
             bool(record.get("source_path") or record.get("local_pdf_path") or record.get("path")),
             len(str(record.get("abstract") or record.get("text_excerpt") or "")),
@@ -94,7 +93,6 @@ def _merge_records(classic: list[Any], discovered: list[dict[str, Any]]) -> list
         if current_rank > previous_rank:
             merged[key] = {**previous, **record}
         else:
-            # Preserve useful provenance fields even when the classic record wins.
             for field in ("discovery_source", "discovery_query", "source_url", "raw_html_path", "acquisition_status"):
                 if not previous.get(field) and record.get(field):
                     previous[field] = record[field]
@@ -145,7 +143,7 @@ def classify_catalog(
     classifications_dir = _classification_dir(root)
     counters = {
         "status": Counter(), "type": Counter(), "source": Counter(), "tier": Counter(),
-        "route": Counter(), "section": Counter(), "topic": Counter(), "input": Counter(),
+        "route": Counter(), "section": Counter(), "usable_section": Counter(), "topic": Counter(), "input": Counter(),
     }
     low_confidence: list[dict[str, Any]] = []
     missing_section: list[dict[str, Any]] = []
@@ -154,7 +152,6 @@ def classify_catalog(
     for index, record in enumerate(papers, 1):
         if not isinstance(record, dict):
             continue
-        # Feed a bounded web excerpt to the classifier when no academic abstract exists.
         if not record.get("abstract") and record.get("text_excerpt"):
             record = {**record, "abstract": str(record.get("text_excerpt") or "")[:6000]}
         result = hybrid.classify_hybrid(
@@ -167,8 +164,11 @@ def classify_catalog(
         ) if use_local_ai else classifier.classify_record(record).as_dict()
 
         source_path = record.get("source_path") or record.get("local_pdf_path") or record.get("pdf_path") or record.get("path")
+        source_exists = bool(source_path and Path(str(source_path)).expanduser().exists())
+        acquisition_ok = str(record.get("acquisition_status") or "").upper() not in {"FAILED", "METADATA_ONLY", "NOT_REQUESTED", "NO_URL"}
+        handoff_candidate = source_exists and (acquisition_ok or not record.get("discovery_source"))
         payload = {
-            "schema_version": "2.1",
+            "schema_version": "2.2",
             "document_key": record.get("doi") or record.get("source_sha256") or record.get("discovery_key") or _stem_for_record(record, index),
             "title": record.get("title"),
             "authors": record.get("authors") or [],
@@ -186,6 +186,7 @@ def classify_catalog(
             "raw_html_path": record.get("raw_html_path"),
             "raw_html_sha256": record.get("raw_html_sha256"),
             "metadata_only": bool(record.get("metadata_only", False)),
+            "handoff_candidate": handoff_candidate,
             **result,
         }
         stem = _stem_for_record(record, index)
@@ -202,7 +203,10 @@ def classify_catalog(
         counters["tier"][str(result.get("authority_tier"))] += 1
         counters["route"][str(result.get("route_path"))] += 1
         for section in result.get("book_sections") or []:
-            counters["section"][str(section.get("id"))] += 1
+            sid = str(section.get("id"))
+            counters["section"][sid] += 1
+            if handoff_candidate:
+                counters["usable_section"][sid] += 1
         for topic in result.get("topics") or []:
             counters["topic"][str(topic)] += 1
         confidence = float(result.get("classification_confidence") or 0.0)
@@ -220,7 +224,7 @@ def classify_catalog(
             })
 
     audit = {
-        "schema_version": "2.1",
+        "schema_version": "2.2",
         "documents": len(results),
         "input_counts": dict(counters["input"]),
         "classic_catalog_rows": len(classic),
@@ -236,6 +240,7 @@ def classify_catalog(
         "authority_tier_counts": dict(counters["tier"]),
         "route_counts": dict(counters["route"]),
         "section_coverage": dict(sorted(counters["section"].items())),
+        "handoff_candidate_section_coverage": dict(sorted(counters["usable_section"].items())),
         "topic_counts": dict(counters["topic"].most_common()),
         "low_confidence_count": len(low_confidence),
         "missing_section_count": len(missing_section),
