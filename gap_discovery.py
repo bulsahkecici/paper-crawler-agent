@@ -62,7 +62,7 @@ def _write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
 
 def section_gaps(audit: dict[str, Any]) -> list[dict[str, Any]]:
     cfg = _yaml("coverage_targets.yaml")
-    coverage = audit.get("section_coverage") or {}
+    coverage = audit.get("handoff_candidate_section_coverage") or audit.get("section_coverage") or {}
     gaps: list[dict[str, Any]] = []
     for sid, target in (cfg.get("sections") or {}).items():
         current = int(coverage.get(str(sid)) or 0)
@@ -126,7 +126,6 @@ def run_gap_discovery(output_dir: str | Path | None = None) -> dict[str, Any]:
             errors.extend(batch_errors)
             query_log.append({"section_id": sid, "query": query, "results": len(batch)})
 
-    # Reuse only institutional sources that expose an explicit internal-search endpoint.
     institutional = discovery._config().get("institutional_sources") or {}
     unique_terms = list(dict.fromkeys(combined_terms))[:12]
     for name, source_cfg in institutional.items():
@@ -151,7 +150,8 @@ def run_gap_discovery(output_dir: str | Path | None = None) -> dict[str, Any]:
     merged = [*existing, *additions]
     _write_jsonl(root / "discovery_catalog.jsonl", merged)
     report = {
-        "schema_version": "1.0",
+        "schema_version": "1.1",
+        "coverage_basis": "handoff_candidate_section_coverage",
         "sections_below_target": len(gaps),
         "sections_searched": selected,
         "queries": query_log,
@@ -159,7 +159,7 @@ def run_gap_discovery(output_dir: str | Path | None = None) -> dict[str, Any]:
         "catalog_additions": len(additions),
         "catalog_total": len(merged),
         "errors": errors,
-        "next_step": "rerun classify_catalog.py, then inspect coverage again",
+        "next_step": "rerun classify_catalog.py, then inspect handoff-candidate coverage again",
     }
     audit_dir = root / "audit"
     audit_dir.mkdir(parents=True, exist_ok=True)
