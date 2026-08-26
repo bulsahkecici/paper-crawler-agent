@@ -65,7 +65,7 @@ TOPIC_TERMS: dict[str, tuple[str, ...]] = {
     "lining": ("lining", "kaplama"),
     "waterproofing": ("waterproof", "waterproofing", "yalıtım"),
     "geology": ("geology", "geological", "jeoloji", "jeolojik"),
-    "geotechnics": ("geotechnical", "geotechnics", "jeoteknik"),
+    "geotechnics": ("geotechnical", "geotechnics", "jeoteknik", "geoteknik"),
     "route_selection": ("route selection", "alignment selection", "güzergah"),
     "monitoring": ("monitoring", "instrumentation", "izleme", "shm"),
     "construction_cost": ("construction cost", "yapım maliyeti", "unit cost", "capex"),
