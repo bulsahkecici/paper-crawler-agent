@@ -126,7 +126,7 @@ sections:
     medium_terms: ["cost", "investment", "transportation economics"]
   "4.3.5":
     title: "Tünel Yaşam Döngü Maliyetleri"
-    strong_terms: ["tunnel life cycle cost", "road tunnel lifecycle cost", "tunnel LCC", "tünel yaşam döngüsü maliyeti"]
+    strong_terms: ["life cycle cost", "tunnel life cycle cost", "road tunnel lifecycle cost", "tunnel LCC", "tünel yaşam döngüsü maliyeti"]
     medium_terms: ["whole life cost", "maintenance cost", "operation cost", "construction cost"]
 
   "5":
