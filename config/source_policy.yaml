@@ -39,6 +39,20 @@ authority_tiers:
     evidence_priority: 0
 
 source_classes:
+  UNIVERSITY_REPOSITORY:
+    default_tier: C2
+    known_domains:
+      - tez.yok.gov.tr
+    domain_suffixes:
+      - edu.tr
+      - .edu
+      - .ac.uk
+      - .edu.au
+    domain_fragments:
+      - repository
+      - openaccess
+      - dspace
+      - eprints
   TR_OFFICIAL:
     default_tier: A1
     domain_suffixes:
@@ -68,19 +82,6 @@ source_classes:
     known_domains:
       - ita-aites.org
       - piarc.org
-  UNIVERSITY_REPOSITORY:
-    default_tier: C2
-    domain_suffixes:
-      - edu.tr
-      - .edu
-      - .ac.uk
-      - .edu.au
-    domain_fragments:
-      - repository
-      - openaccess
-      - dspace
-      - eprints
-      - tez.yok.gov.tr
   ACADEMIC:
     default_tier: B2
     discovery_sources:
