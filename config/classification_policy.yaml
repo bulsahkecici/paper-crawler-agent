@@ -31,6 +31,10 @@ llm_review:
   max_candidate_sections: 8
   max_selected_sections: 5
   min_accept_confidence: 0.72
+  local_servers:
+    - "http://127.0.0.1:1234/v1"
+    - "http://127.0.0.1:11434/v1"
+    - "http://127.0.0.1:8000/v1"
   preferred_model_terms:
     - "qwen3.6"
     - "qwen3-6"
