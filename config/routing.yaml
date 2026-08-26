@@ -1,0 +1,90 @@
+version: 1
+
+routes:
+  - match:
+      source_class: TR_OFFICIAL
+      publisher_code: KGM
+      document_type: TECHNICAL_STANDARD
+    path: "A_OFFICIAL/TR/KGM/TECHNICAL_STANDARDS"
+
+  - match:
+      source_class: TR_OFFICIAL
+      publisher_code: KGM
+      document_type: TECHNICAL_GUIDELINE
+    path: "A_OFFICIAL/TR/KGM/GUIDELINES"
+
+  - match:
+      source_class: TR_OFFICIAL
+      publisher_code: KGM
+      document_type: COST_REPORT
+    path: "A_OFFICIAL/TR/KGM/COST_REPORTS"
+
+  - match:
+      source_class: TR_OFFICIAL
+      publisher_code: KGM
+      document_type: INVENTORY
+    path: "A_OFFICIAL/TR/KGM/INVENTORY"
+
+  - match:
+      source_class: TR_OFFICIAL
+      publisher_code: KGM
+      document_type: NEWS
+    path: "A_OFFICIAL/TR/KGM/NEWS"
+
+  - match:
+      source_class: TR_OFFICIAL
+    path: "A_OFFICIAL/TR/OTHER"
+
+  - match:
+      source_class: INT_OFFICIAL
+    path: "A_OFFICIAL/INTERNATIONAL"
+
+  - match:
+      source_class: STANDARD_BODY
+    path: "B_STANDARDS_GUIDELINES"
+
+  - match:
+      document_type: REVIEW_ARTICLE
+    path: "C_ACADEMIC/REVIEWS"
+
+  - match:
+      document_type: JOURNAL_ARTICLE
+    path: "C_ACADEMIC/ARTICLES"
+
+  - match:
+      document_type: THESIS_PHD
+    path: "C_ACADEMIC/THESES/PHD"
+
+  - match:
+      document_type: THESIS_MSC
+    path: "C_ACADEMIC/THESES/MSC"
+
+  - match:
+      document_type: CONFERENCE_PAPER
+    path: "C_ACADEMIC/CONFERENCE"
+
+  - match:
+      document_type: PREPRINT
+    path: "C_ACADEMIC/PREPRINTS"
+
+  - match:
+      document_type: TECHNICAL_REPORT
+    path: "D_REPORTS_BOOKS/TECHNICAL_REPORTS"
+
+  - match:
+      document_type: BOOK
+    path: "D_REPORTS_BOOKS/BOOKS"
+
+  - match:
+      document_type: BOOK_CHAPTER
+    path: "D_REPORTS_BOOKS/BOOK_CHAPTERS"
+
+  - match:
+      document_type: NEWS
+    path: "E_NEWS_CASES"
+
+  - match:
+      source_class: DISCOVERY_ONLY
+    path: "F_DISCOVERY_ONLY"
+
+fallback: "90_STAGING/NEEDS_CLASSIFICATION"
