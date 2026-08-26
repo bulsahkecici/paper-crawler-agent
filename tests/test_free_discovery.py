@@ -52,13 +52,14 @@ class FreeDiscoveryTests(unittest.TestCase):
         self.assertTrue(any("ventilation" in q and "energy" in q for q in queries))
         self.assertTrue(any("geotechnical" in q for q in queries))
 
-    def test_dedup_prefers_direct_pdf_and_richer_record(self) -> None:
+    def test_dedup_prefers_direct_pdf_and_richer_record_for_same_doi(self) -> None:
         base = discovery.DiscoveryRecord(
             title="Tunnel maintenance cost",
             source="x",
             discovery_source="x",
             landing_url="https://example.org/item",
             abstract="short",
+            doi="10.1234/tunnel.1",
         )
         richer = discovery.DiscoveryRecord(
             title="Tunnel maintenance cost",
@@ -67,6 +68,7 @@ class FreeDiscoveryTests(unittest.TestCase):
             landing_url="https://example.org/item",
             pdf_url="https://example.org/item.pdf",
             abstract="much richer abstract about tunnel operation and maintenance cost",
+            doi="https://doi.org/10.1234/tunnel.1",
         )
         rows = discovery.deduplicate([base, richer])
         self.assertEqual(len(rows), 1)
