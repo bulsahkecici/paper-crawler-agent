@@ -1,0 +1,49 @@
+version: 1
+
+embedding:
+  enabled: true
+  local_servers:
+    - "http://127.0.0.1:1234/v1"
+    - "http://127.0.0.1:11434/v1"
+    - "http://127.0.0.1:8000/v1"
+  preferred_model_terms:
+    - "nomic-embed"
+    - "embedding"
+    - "embed"
+  top_k: 5
+  min_similarity: 0.30
+
+fusion:
+  rule_weight: 0.55
+  embedding_weight: 0.45
+  auto_accept_score: 0.88
+  accept_with_audit_score: 0.74
+  llm_review_score: 0.52
+  agreement_bonus: 0.05
+  disagreement_margin: 0.10
+
+llm_review:
+  enabled: true
+  trigger_statuses:
+    - LOCAL_LLM_REVIEW
+    - NEEDS_REVIEW
+  trigger_on_rule_embedding_disagreement: true
+  max_candidate_sections: 8
+  max_selected_sections: 5
+  min_accept_confidence: 0.72
+  preferred_model_terms:
+    - "qwen3.6"
+    - "qwen3-6"
+    - "qwen3.5"
+    - "qwen3"
+
+handoff:
+  allowed_classification_statuses:
+    - AUTO_ACCEPT
+    - ACCEPT_WITH_AUDIT
+    - LLM_ACCEPTED
+  require_primary_section: true
+  require_existing_source: true
+  require_sha256: true
+  copy_mode: hardlink_then_copy
+  package_name: TunnelBookAI_Source_Pack
