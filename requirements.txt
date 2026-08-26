@@ -1,0 +1,5 @@
+qwen-agent
+requests
+numpy
+soundfile
+tqdm
