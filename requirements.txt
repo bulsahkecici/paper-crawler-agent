@@ -4,3 +4,4 @@ numpy
 soundfile
 tqdm
 PyYAML
+python-dateutil
