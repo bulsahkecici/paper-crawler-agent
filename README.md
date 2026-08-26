@@ -197,6 +197,10 @@ Gap pass istemiyorsanız:
 python prepare_tunnelbookai_handoff.py --skip-gap-pass
 ```
 
+## Dedup kimliği
+
+Aynı akademik eser için öncelik DOI tabanlı work identity'dir. Aynı DOI farklı API/landing/PDF URL'lerinden gelirse tek kayıt seçilir ve daha zengin/direct-PDF kayıt tercih edilir. DOI yoksa URL kayıtları acquisition aşamasına kadar ayrı kalabilir; indirilen içeriklerde SHA256 kesin byte-level duplicate kontrolüdür. Bu yaklaşım, yalnız URL benzerliğine bakıp iki farklı sürümü yanlışlıkla aynı eser saymaktan kaçınır.
+
 ## Evidence önceliği
 
 Genel politika:
