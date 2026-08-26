@@ -125,11 +125,13 @@ def _pick_model(model_ids: list[str], preferred_terms: list[str], *, embedding: 
     return candidates[0] if candidates else None
 
 
-def detect_local_clients() -> tuple[LocalOpenAIClient | None, str | None, LocalOpenAIClient | None, str | None]:
-    cfg = _load_yaml("classification_policy.yaml")
-    emb_cfg = cfg.get("embedding") or {}
-    llm_cfg = cfg.get("llm_review") or {}
-    for server in emb_cfg.get("local_servers") or []:
+def _probe_role(
+    servers: list[str],
+    preferred_terms: list[str],
+    *,
+    embedding: bool,
+) -> tuple[LocalOpenAIClient | None, str | None]:
+    for server in servers:
         if not is_loopback_url(server):
             continue
         client = LocalOpenAIClient(server)
@@ -137,10 +139,30 @@ def detect_local_clients() -> tuple[LocalOpenAIClient | None, str | None, LocalO
             models = client.models()
         except (requests.RequestException, ValueError, OSError):
             continue
-        emb_model = _pick_model(models, list(emb_cfg.get("preferred_model_terms") or []), embedding=True)
-        llm_model = _pick_model(models, list(llm_cfg.get("preferred_model_terms") or []), embedding=False)
-        return client if emb_model else None, emb_model, client if llm_model else None, llm_model
-    return None, None, None, None
+        model = _pick_model(models, preferred_terms, embedding=embedding)
+        if model:
+            return client, model
+    return None, None
+
+
+def detect_local_clients() -> tuple[LocalOpenAIClient | None, str | None, LocalOpenAIClient | None, str | None]:
+    """Discover embedding and chat models independently across loopback endpoints."""
+    cfg = _load_yaml("classification_policy.yaml")
+    emb_cfg = cfg.get("embedding") or {}
+    llm_cfg = cfg.get("llm_review") or {}
+    emb_servers = [str(x) for x in (emb_cfg.get("local_servers") or [])]
+    llm_servers = [str(x) for x in (llm_cfg.get("local_servers") or emb_servers)]
+    emb_client, emb_model = _probe_role(
+        emb_servers,
+        list(emb_cfg.get("preferred_model_terms") or []),
+        embedding=True,
+    )
+    llm_client, llm_model = _probe_role(
+        llm_servers,
+        list(llm_cfg.get("preferred_model_terms") or []),
+        embedding=False,
+    )
+    return emb_client, emb_model, llm_client, llm_model
 
 
 def _cosine(a: list[float], b: list[float]) -> float:
