@@ -1,0 +1,261 @@
+version: 1
+book: TunnelBookAI
+sections:
+  "1.1":
+    title: "Tünelin Tanımı"
+    strong_terms: ["tunnel definition", "definition of tunnel", "tünel tanımı", "tunnel terminology"]
+    medium_terms: ["tunnel", "underground structure", "terminology"]
+  "1.2":
+    title: "Tünellerin Sınıflandırılması"
+    strong_terms: ["tunnel classification", "classification of tunnels", "tünellerin sınıflandırılması"]
+    medium_terms: ["road tunnel", "rail tunnel", "utility tunnel", "subaqueous tunnel"]
+  "1.3":
+    title: "Tünellerin Tarihçesi"
+    strong_terms: ["history of tunnelling", "history of tunnels", "tünelcilik tarihi", "tünellerin tarihçesi"]
+    medium_terms: ["ancient tunnel", "early tunnel", "historical tunnel"]
+  "1.3.1":
+    title: "Dünyadaki İlk Tüneller"
+    strong_terms: ["first tunnels", "ancient tunnels", "oldest tunnel"]
+    medium_terms: ["history of tunnelling", "ancient engineering"]
+  "1.3.2":
+    title: "Türkiye’de İlk Tünel"
+    strong_terms: ["Türkiye ilk tünel", "Turkey first tunnel", "historical tunnel Turkey"]
+    medium_terms: ["Osmanlı tünel", "Türkiye tünel tarihi"]
+  "1.4":
+    title: "En İyi Tünel Mühendislik Uygulamaları"
+    strong_terms: ["tunnel best practices", "road tunnel best practice", "tunnel engineering practice"]
+    medium_terms: ["guideline", "manual", "design practice"]
+  "1.4.1":
+    title: "Dünyada Karayolu Tünelleri"
+    strong_terms: ["road tunnels worldwide", "highway tunnel international", "world road tunnel"]
+    medium_terms: ["highway tunnel", "road tunnel"]
+  "1.4.2":
+    title: "Türkiye’de Karayolu Tünelleri"
+    strong_terms: ["Türkiye karayolu tünelleri", "Turkish road tunnels", "highway tunnels Turkey"]
+    medium_terms: ["KGM tunnel", "road tunnel Turkey"]
+  "1.5":
+    title: "Tünel Felaketleri"
+    strong_terms: ["tunnel disaster", "tunnel accident", "tunnel fire", "tünel felaketi", "tünel kazası"]
+    medium_terms: ["road tunnel safety", "emergency", "fatal accident"]
+  "1.5.1":
+    title: "Dünyada Gerçekleşen Önemli Tünel Felaketleri"
+    strong_terms: ["Mont Blanc tunnel fire", "Tauern tunnel fire", "Gotthard tunnel fire", "road tunnel disaster"]
+    medium_terms: ["tunnel fire case study", "tunnel accident investigation"]
+  "1.5.2":
+    title: "Türkiye’de Gerçekleşen Önemli Tünel Kazaları"
+    strong_terms: ["Türkiye tünel kazası", "Turkish tunnel accident", "tünel yangını Türkiye"]
+    medium_terms: ["road tunnel accident Turkey", "KGM tunnel accident"]
+
+  "2.1":
+    title: "Tünel Yapı/Destek Elemanları"
+    strong_terms: ["tunnel support systems", "tunnel support elements", "tünel destek elemanları"]
+    medium_terms: ["lining", "shotcrete", "rock bolt", "steel rib", "support"]
+  "2.1.1":
+    title: "Tünellerle İlgili Tanımlamalar"
+    strong_terms: ["tunnel terminology", "tunnel definitions", "tünel tanımları"]
+    medium_terms: ["portal", "lining", "invert", "crown", "face"]
+  "2.1.2":
+    title: "Tünel Destekleme Elemanları"
+    strong_terms: ["rock bolt tunnel", "shotcrete tunnel support", "steel rib tunnel", "segmental lining"]
+    medium_terms: ["support system", "lining", "reinforcement"]
+  "2.2":
+    title: "Tünel Yapım Yöntemleri"
+    strong_terms: ["tunnel construction methods", "tunnelling methods", "tünel yapım yöntemleri"]
+    medium_terms: ["NATM", "TBM", "EPB", "drill and blast", "immersed tube"]
+  "2.2.1":
+    title: "Kayaç Zeminde Açılan Tüneller"
+    strong_terms: ["rock tunnel construction", "hard rock tunnel", "NATM rock tunnel", "drill and blast tunnel"]
+    medium_terms: ["rock mass", "shotcrete", "rock bolt", "hard rock TBM"]
+  "2.2.2":
+    title: "Yumuşak Zeminde Açılan Tüneller"
+    strong_terms: ["soft ground tunnel", "EPB shield", "slurry shield", "soft soil tunnelling"]
+    medium_terms: ["ground settlement", "face stability", "shield tunnel"]
+  "2.2.3":
+    title: "Su Altında Açılan Tüneller"
+    strong_terms: ["underwater tunnel", "immersed tube tunnel", "subaqueous tunnel"]
+    medium_terms: ["immersed tunnel", "cross-river tunnel", "submerged tunnel"]
+  "2.3":
+    title: "Tünellerin Yapım Maliyetine Etki Eden Unsurlar"
+    strong_terms: ["tunnel construction cost factors", "tunnel cost drivers", "cost overrun tunnel", "tünel yapım maliyeti"]
+    medium_terms: ["construction cost", "unit cost", "geology cost", "risk cost"]
+  "2.4":
+    title: "Tünellerin Projelendirilmesi"
+    strong_terms: ["tunnel design", "road tunnel design", "tünel projelendirilmesi"]
+    medium_terms: ["alignment", "geotechnical design", "cross section", "portal design"]
+  "2.4.1":
+    title: "Jeolojik ve Geoteknik İncelemeler"
+    strong_terms: ["tunnel geotechnical investigation", "tunnel geological investigation", "tünel jeoteknik etüt"]
+    medium_terms: ["borehole", "geophysics", "rock mass classification", "site investigation"]
+  "2.4.1.1":
+    title: "İnşaat Başlamadan Önce Yapılan Çalışmalar"
+    strong_terms: ["preconstruction tunnel investigation", "pre-construction geotechnical investigation", "tunnel site investigation"]
+    medium_terms: ["borehole", "laboratory testing", "geological mapping"]
+  "2.4.1.2":
+    title: "İnşaat Esnasındaki Çalışmalar"
+    strong_terms: ["tunnel monitoring during construction", "observational method tunnel", "construction stage geotechnical monitoring"]
+    medium_terms: ["convergence", "face mapping", "instrumentation", "monitoring"]
+  "2.4.1.3":
+    title: "Kullanım Aşaması Çalışmaları"
+    strong_terms: ["in-service tunnel monitoring", "tunnel structural health monitoring", "operational tunnel inspection"]
+    medium_terms: ["inspection", "SHM", "condition assessment"]
+  "2.4.2":
+    title: "Tünel Güzergahının Seçimi ve Boykesit"
+    strong_terms: ["tunnel alignment selection", "tunnel route selection", "tunnel longitudinal profile"]
+    medium_terms: ["alignment", "route", "profile", "overburden"]
+  "2.4.2.1":
+    title: "Güzergah Seçiminde Dikkat Edilecek Hususlar"
+    strong_terms: ["tunnel route selection criteria", "tunnel alignment optimization"]
+    medium_terms: ["route selection", "geology", "risk", "environment"]
+  "2.4.2.2":
+    title: "Boykesit Belirlemede Dikkat Edilecek Hususlar"
+    strong_terms: ["tunnel longitudinal profile design", "tunnel vertical alignment"]
+    medium_terms: ["gradient", "overburden", "profile"]
+  "2.4.3":
+    title: "KGM Tünel Projelendirilmesi Esasları"
+    strong_terms: ["KGM tünel projelendirme", "Karayolları tünel proje esasları", "KGM tunnel design"]
+    medium_terms: ["KGM", "technical specification", "road tunnel design Turkey"]
+
+  "3":
+    title: "Karayolları Genel Müdürlüğü Tünellerin Tarihçesi"
+    strong_terms: ["KGM tünel tarihçesi", "Karayolları tünel tarihi", "Turkish highway tunnel history"]
+    medium_terms: ["KGM", "Türkiye tünel envanteri", "road tunnel Turkey"]
+
+  "4":
+    title: "Maliyet Kavramı, Önemi ve Ulaşım"
+    strong_terms: ["transportation cost", "transport cost concept", "maliyet kavramı", "ulaşım maliyetleri"]
+    medium_terms: ["cost", "investment", "transportation economics"]
+  "4.3.5":
+    title: "Tünel Yaşam Döngü Maliyetleri"
+    strong_terms: ["life cycle cost", "tunnel life cycle cost", "road tunnel lifecycle cost", "tunnel LCC", "tünel yaşam döngüsü maliyeti"]
+    medium_terms: ["whole life cost", "maintenance cost", "operation cost", "construction cost"]
+
+  "5":
+    title: "Tünel Bakım-Onarım ve İşletme Maliyetleri"
+    strong_terms: ["tunnel maintenance operation", "tunnel O&M", "tünel bakım işletme"]
+    medium_terms: ["maintenance", "operation", "inspection", "cost"]
+  "5.4":
+    title: "Tünel Bakım-Onarım ve İşletme"
+    strong_terms: ["road tunnel maintenance", "tunnel operation and maintenance", "tünel bakım onarım"]
+    medium_terms: ["maintenance", "operation", "inspection"]
+  "5.4.1":
+    title: "Yapısal Bakım"
+    strong_terms: ["tunnel structural maintenance", "lining maintenance", "tunnel structural inspection"]
+    medium_terms: ["lining defect", "crack", "water leakage", "repair"]
+  "5.4.2":
+    title: "Elektrik-Elektronik ve Elektromekanik Sistemlerin Bakımı"
+    strong_terms: ["tunnel electromechanical maintenance", "tunnel electrical systems maintenance", "tunnel equipment maintenance"]
+    medium_terms: ["SCADA", "ventilation", "lighting", "fire detection", "jet fan"]
+  "5.4.3":
+    title: "Periyodik Bakım"
+    strong_terms: ["periodic tunnel maintenance", "tunnel periodic inspection"]
+    medium_terms: ["inspection interval", "preventive maintenance", "scheduled maintenance"]
+  "5.5":
+    title: "Tünel Bakım-Onarım ve İşletme Maliyetleri"
+    strong_terms: ["tunnel maintenance cost", "tunnel operation cost", "road tunnel O&M cost"]
+    medium_terms: ["maintenance cost", "operating expenditure", "OPEX"]
+  "5.5.1":
+    title: "Yönetim ve İşletme Maliyetleri"
+    strong_terms: ["tunnel management cost", "tunnel operating cost", "road tunnel operational expenditure"]
+    medium_terms: ["staff cost", "management", "operation"]
+  "5.5.2":
+    title: "Bakım-Onarım Maliyetleri"
+    strong_terms: ["tunnel repair cost", "tunnel maintenance cost", "tünel bakım onarım maliyeti"]
+    medium_terms: ["rehabilitation cost", "maintenance expenditure"]
+  "5.5.2.1":
+    title: "Yapısal Bakım-Onarım Maliyetleri"
+    strong_terms: ["tunnel structural repair cost", "lining repair cost"]
+    medium_terms: ["structural maintenance", "lining rehabilitation", "repair cost"]
+  "5.5.2.2":
+    title: "Elektromekanik Sistemlerin Bakım Maliyetleri"
+    strong_terms: ["tunnel electromechanical maintenance cost", "tunnel equipment maintenance cost"]
+    medium_terms: ["ventilation maintenance cost", "lighting maintenance cost", "SCADA maintenance"]
+  "5.6":
+    title: "Bakım-Onarım ve İşletme Maliyetlerini Etkileyen Faktörler"
+    strong_terms: ["tunnel maintenance cost factors", "tunnel operating cost drivers"]
+    medium_terms: ["traffic", "length", "ventilation", "age", "equipment"]
+  "5.7":
+    title: "Verimli Bakım-İşletme ve Enerji Tüketimi"
+    strong_terms: ["tunnel energy consumption", "tunnel maintenance efficiency", "tunnel energy efficiency"]
+    medium_terms: ["energy", "ventilation", "lighting", "optimization"]
+  "5.7.1":
+    title: "Bakım-İşletme Maliyetini Azaltma Yöntemleri"
+    strong_terms: ["reduce tunnel maintenance cost", "tunnel maintenance optimization", "predictive maintenance tunnel"]
+    medium_terms: ["preventive maintenance", "asset management", "optimization"]
+  "5.7.2":
+    title: "Enerji Maliyetini Azaltma Yöntemleri"
+    strong_terms: ["tunnel ventilation energy optimization", "tunnel lighting energy efficiency", "road tunnel energy saving", "tünel enerji verimliliği"]
+    medium_terms: ["jet fan energy", "LED tunnel lighting", "energy management", "electricity cost"]
+  "5.8":
+    title: "Devlet ve İl Yollarında Tünel Bakım İşletme Şeflikleri"
+    strong_terms: ["KGM tünel bakım işletme şefliği", "tunnel maintenance operations Turkey"]
+    medium_terms: ["KGM", "bakım işletme", "tunnel inventory Turkey"]
+  "5.9":
+    title: "Ulusal ve Uluslararası Literatür Taraması"
+    strong_terms: ["tunnel maintenance literature review", "tunnel operation literature review"]
+    medium_terms: ["review", "maintenance", "operation"]
+  "5.9.1":
+    title: "Ulusal Literatür Taraması"
+    strong_terms: ["Türkiye tünel bakım literatürü", "Turkish tunnel maintenance study"]
+    medium_terms: ["Turkey", "KGM", "tez", "makale"]
+  "5.9.2":
+    title: "Uluslararası Literatür Taraması"
+    strong_terms: ["international tunnel maintenance literature", "road tunnel O&M review"]
+    medium_terms: ["review", "maintenance", "operation"]
+
+  "6":
+    title: "Tünel Yapım Maliyetleri"
+    strong_terms: ["tunnel construction cost", "tunnel cost estimation", "tünel yapım maliyeti"]
+    medium_terms: ["unit cost", "cost model", "cost overrun", "CAPEX"]
+  "6.1":
+    title: "Çalışmanın Amacı, Kapsamı, Yöntem ve Veriler"
+    strong_terms: ["tunnel construction cost methodology", "tunnel cost dataset"]
+    medium_terms: ["methodology", "data", "cost analysis"]
+  "6.2":
+    title: "Ulusal ve Uluslararası Literatür Taraması"
+    strong_terms: ["tunnel construction cost literature review", "tunnel cost review"]
+    medium_terms: ["construction cost", "review", "cost estimation"]
+  "6.2.1":
+    title: "Ulusal Literatür Taraması"
+    strong_terms: ["Türkiye tünel yapım maliyeti", "Turkish tunnel construction cost"]
+    medium_terms: ["Turkey", "KGM", "tunnel cost"]
+  "6.2.2":
+    title: "Uluslararası Literatür Taraması"
+    strong_terms: ["international tunnel construction cost", "tunnel cost estimation literature"]
+    medium_terms: ["construction cost", "cost model", "international"]
+
+topics:
+  - history
+  - classification
+  - NATM
+  - TBM
+  - EPB
+  - shield
+  - drill_and_blast
+  - immersed_tube
+  - rock_tunnel
+  - soft_ground
+  - underwater_tunnel
+  - shotcrete
+  - rock_bolt
+  - lining
+  - waterproofing
+  - geology
+  - geotechnics
+  - route_selection
+  - monitoring
+  - construction_cost
+  - cost_driver
+  - life_cycle_cost
+  - structural_maintenance
+  - electromechanical
+  - periodic_maintenance
+  - operation_cost
+  - maintenance_cost
+  - energy
+  - ventilation
+  - lighting
+  - safety
+  - fire
+  - accident
+  - KGM
+  - Turkey

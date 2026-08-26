@@ -1,0 +1,159 @@
+version: 1
+
+policy:
+  paid_search_apis: false
+  respect_robots_txt: true
+  public_network_only: true
+  max_redirects: 5
+  request_timeout_seconds: 25
+  max_web_bytes: 10485760
+  max_pdf_bytes: 83886080
+  crawl_delay_seconds: 0.35
+  max_pages_per_seed: 30
+  max_depth: 2
+  dynamic_seed_min_relevant_urls: 2
+  dynamic_seed_min_authority_score: 75
+
+academic_sources:
+  openalex:
+    enabled: true
+    free: true
+  crossref:
+    enabled: true
+    free: true
+  europe_pmc:
+    enabled: true
+    free: true
+  doaj:
+    enabled: true
+    free: true
+  arxiv:
+    enabled: true
+    free: true
+  openaire:
+    enabled: true
+    free: true
+    endpoint: "https://api.openaire.eu/graph/v3/research-products"
+  core:
+    enabled: true
+    free: true
+    endpoint: "https://api.core.ac.uk/v3/search/works"
+    api_key_env: "CORE_API_KEY"
+    note: "Runs best-effort without a key; an optional free key may improve reliability/rate limits."
+  semantic_scholar:
+    enabled: false
+    free: true
+    api_key_env: "SEMANTIC_SCHOLAR_API_KEY"
+    note: "Disabled by default to avoid unauthenticated rate-limit noise; enable when a free key is available."
+
+institutional_sources:
+  KGM:
+    enabled: true
+    authority_score: 100
+    source_class: TR_OFFICIAL
+    publisher: "Karayolları Genel Müdürlüğü"
+    domains: ["kgm.gov.tr", "www.kgm.gov.tr"]
+    seed_urls:
+      - "https://www.kgm.gov.tr/Sayfalar/KGM/SiteTr/Yayinlar/Yayinlar.aspx"
+    internal_search_urls:
+      - "https://www.kgm.gov.tr/Sayfalar/KGM/SiteTr/Arama/AramaSonuc.aspx?k={query}"
+    sitemap_probe: true
+    common_crawl_expand: false
+
+  FHWA:
+    enabled: true
+    authority_score: 95
+    source_class: INT_OFFICIAL
+    publisher: "Federal Highway Administration"
+    domains: ["fhwa.dot.gov", "www.fhwa.dot.gov"]
+    seed_urls:
+      - "https://www.fhwa.dot.gov/bridge/tunnel/library.cfm"
+    sitemap_probe: true
+    common_crawl_expand: false
+
+  PIARC:
+    enabled: true
+    authority_score: 95
+    source_class: INT_OFFICIAL
+    publisher: "PIARC - World Road Association"
+    domains: ["piarc.org", "www.piarc.org", "tunnelsmanual.piarc.org"]
+    seed_urls:
+      - "https://tunnelsmanual.piarc.org/en"
+    sitemap_probe: true
+    common_crawl_expand: false
+
+  ITA_AITES:
+    enabled: true
+    authority_score: 90
+    source_class: PROFESSIONAL_ORGANIZATION
+    publisher: "ITA-AITES"
+    domains: ["ita-aites.org", "www.ita-aites.org", "about.ita-aites.org"]
+    seed_urls:
+      - "https://about.ita-aites.org/"
+    sitemap_probe: true
+    common_crawl_expand: false
+
+  DERGIPARK:
+    enabled: true
+    authority_score: 82
+    source_class: ACADEMIC
+    publisher: "DergiPark"
+    domains: ["dergipark.org.tr", "www.dergipark.org.tr"]
+    seed_urls: []
+    dergipark_oai_probe: true
+    sitemap_probe: false
+    common_crawl_expand: false
+
+  YOK_TEZ:
+    enabled: true
+    authority_score: 88
+    source_class: UNIVERSITY_REPOSITORY
+    publisher: "YÖK Ulusal Tez Merkezi"
+    domains: ["tez.yok.gov.tr"]
+    seed_urls:
+      - "https://tez.yok.gov.tr/UlusalTezMerkezi/"
+    metadata_only: true
+    sitemap_probe: false
+    common_crawl_expand: false
+    note: "No stable public search API is assumed. Direct thesis URLs discovered elsewhere can be registered and snapshotted without bypassing access controls."
+
+common_crawl:
+  enabled: true
+  collinfo_url: "https://index.commoncrawl.org/collinfo.json"
+  index_base: "https://index.commoncrawl.org"
+  max_index_pages: 1
+  max_records_per_domain: 250
+  mode: "domain_expansion_only"
+
+blocked_acquisition_domains:
+  - researchgate.net
+  - academia.edu
+  - sciencedirect.com
+  - onlinelibrary.wiley.com
+  - ieeexplore.ieee.org
+  - ascelibrary.org
+
+relevance_url_terms:
+  - tunnel
+  - tunnelling
+  - tunneling
+  - tunel
+  - tünel
+  - natm
+  - tbm
+  - geotechn
+  - lining
+  - shotcrete
+  - ventilation
+  - maintenance
+  - inspection
+  - fire
+  - safety
+  - energy
+  - cost
+  - maliyet
+  - bakım
+  - işletme
+  - şartname
+  - specification
+  - guideline

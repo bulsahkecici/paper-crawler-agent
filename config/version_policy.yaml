@@ -1,0 +1,32 @@
+version: 1
+
+identity_priority:
+  - doi
+  - source_sha256
+  - title_author_year
+
+canonical_source_preference:
+  - OFFICIAL_PUBLISHER
+  - OFFICIAL_INSTITUTIONAL_REPOSITORY
+  - UNIVERSITY_REPOSITORY
+  - OPEN_ACCESS_AGGREGATOR
+  - PREPRINT_SERVER
+  - DISCOVERY_ONLY
+
+version_rules:
+  keep_historical_official_versions: true
+  prefer_latest_official_as_primary: true
+  preprint_vs_published:
+    prefer_published_peer_reviewed: true
+    keep_preprint_as_alternate: true
+  standard_or_specification:
+    prefer_latest_as_primary: true
+    keep_superseded_versions: true
+    superseded_role: HISTORICAL_REFERENCE
+
+same_work_rules:
+  same_doi: SAME_WORK
+  same_sha256: EXACT_DUPLICATE
+  title_author_year_similarity_threshold: 0.94
+  auto_merge_title_author_year: false
+  require_review_for_fuzzy_match: true
