@@ -1,6 +1,6 @@
 # Paper Crawler Agent
 
-TunnelBookAI için **kaynak keşfi → indirme/snapshot → sınıflandırma → audit → handoff** hazırlayan ayrı bir staging projesidir.
+TunnelBookAI için **kaynak keşfi → indirme/snapshot → sınıflandırma → coverage audit → gap search → handoff** hazırlayan ayrı bir staging projesidir.
 
 ## Temel sınır
 
@@ -42,7 +42,11 @@ Rules + local embedding
    ↓
 Ambiguous? → local Qwen reviewer
    ↓
-classification_index.jsonl
+classification audit
+   ↓
+Coverage target met?
+   ├─ yes → handoff
+   └─ no  → focused gap search → reclassify
    ↓
 READY_FOR_HANDOFF export
    ↓
@@ -121,8 +125,22 @@ Sınıflandırma eksenleri:
 - `classification_confidence`
 - `route_path`
 - `classification_status`
+- `handoff_candidate`
 
-## 5. TunnelBookAI handoff
+`section_coverage` bütün keşif kayıtlarını gösterir. `handoff_candidate_section_coverage` ise gerçekten indirilmiş/snapshot alınmış ve TunnelBookAI handoff'ına aday olabilecek kaynakları sayar. Gap search ikinci metriği kullanır; metadata-only URL'ler coverage'ı yapay olarak dolduramaz.
+
+## 5. Coverage-gap ikinci turu
+
+```bash
+python gap_discovery.py
+python classify_catalog.py
+```
+
+`config/coverage_targets.yaml` her kitap bölümü için discovery hedeflerini tutar. Bir bölüm hedefin altındaysa yalnızca o bölümün taxonomy terimleriyle odaklı ikinci arama yapılır.
+
+Örneğin `4.3.5 Tünel Yaşam Döngü Maliyetleri` zayıf kalırsa LCC/cost sorguları; `5.7.2 Enerji Maliyetini Azaltma` zayıf kalırsa ventilation/lighting/energy sorguları çalışır.
+
+## 6. TunnelBookAI handoff
 
 ```bash
 python handoff_export.py
@@ -146,7 +164,38 @@ tunel_makaleleri/exports/TunnelBookAI_Source_Pack/
     └── handoff_audit.json
 ```
 
-Web kaynaklarında normalize edilmiş `source.md` ana handoff kaynağıdır; mevcutsa ham `source_raw.html` da ek asset olarak pakete alınır ve SHA256 listesine yazılır.
+Web kaynaklarında normalize edilmiş `source.md` ana handoff kaynağıdır; mevcutsa ham `source_raw.html` da ek asset olarak pakete alınır ve SHA256 listesine yazılır. DOI, publisher, source URL, discovery source/query gibi provenance alanları handoff metadata'sında korunur.
+
+## Tek komut
+
+Tam pipeline:
+
+```bash
+python prepare_tunnelbookai_handoff.py
+```
+
+Bu komut sırasıyla:
+
+1. ücretsiz discovery,
+2. acquisition/snapshot,
+3. classification,
+4. coverage-gap pass,
+5. yeniden classification,
+6. handoff export
+
+çalıştırır.
+
+Local AI istemiyorsanız:
+
+```bash
+python prepare_tunnelbookai_handoff.py --rules-only
+```
+
+Gap pass istemiyorsanız:
+
+```bash
+python prepare_tunnelbookai_handoff.py --skip-gap-pass
+```
 
 ## Evidence önceliği
 
@@ -177,6 +226,7 @@ Bu sıra konuya göre `source_policy.yaml` ile override edilebilir.
 - `robots.txt` kurallarına uyulur.
 - ResearchGate, Academia.edu ve belirlenmiş kapalı/paywall domainlerinden otomatik acquisition yapılmaz.
 - PDF stream edilir, boyut sınırı uygulanır ve SHA256 indirme sırasında hesaplanır.
+- Common Crawl genel arama motoru gibi kullanılmaz; yalnızca önceden güvenilir bulunan domain içinde URL genişletme yapar.
 - `READY_FOR_HANDOFF`, **kitapta kanıt olarak onaylandı** anlamına gelmez.
 
 ## Test
