@@ -4,7 +4,8 @@
 The exporter never mutates canonical PaperCrawler sources. It validates the
 classification gate, source existence and SHA256, then hardlinks (or copies)
 accepted sources into deterministic source-type folders with metadata and
-classification sidecars.
+classification sidecars. Discovery provenance and optional raw web snapshots are
+preserved for TunnelBookAI auditability.
 """
 
 from __future__ import annotations
@@ -123,21 +124,21 @@ def export_handoff(
         if reason is None and require_source and (source_path is None or not source_path.exists()):
             reason = "source_missing"
         if reason:
-            rejected.append({"title": row.get("title"), "status": status, "reason": reason})
+            rejected.append({"title": row.get("title"), "status": status, "reason": reason, "discovery_source": row.get("discovery_source")})
             continue
         assert source_path is not None
 
         actual_sha = _sha256(source_path)
         expected_sha = str(row.get("source_sha256") or "").strip().lower()
         if expected_sha and expected_sha != actual_sha:
-            rejected.append({"title": row.get("title"), "status": status, "reason": "sha256_mismatch"})
+            rejected.append({"title": row.get("title"), "status": status, "reason": "sha256_mismatch", "discovery_source": row.get("discovery_source")})
             continue
         if require_sha and not expected_sha:
             row["source_sha256"] = actual_sha
 
         document_id = _stable_document_id(row, source_path)
         if document_id in seen_ids:
-            rejected.append({"title": row.get("title"), "status": status, "reason": "duplicate_document_id"})
+            rejected.append({"title": row.get("title"), "status": status, "reason": "duplicate_document_id", "discovery_source": row.get("discovery_source")})
             continue
         seen_ids.add(document_id)
 
@@ -148,6 +149,24 @@ def export_handoff(
         copy_mode = _link_or_copy(source_path, source_dest)
         copy_modes[copy_mode] += 1
 
+        extra_assets: list[dict[str, Any]] = []
+        raw_html_value = row.get("raw_html_path")
+        if raw_html_value:
+            raw_html = Path(str(raw_html_value)).expanduser()
+            if raw_html.exists() and raw_html.is_file():
+                expected_raw_sha = str(row.get("raw_html_sha256") or "").strip().lower()
+                actual_raw_sha = _sha256(raw_html)
+                if not expected_raw_sha or expected_raw_sha == actual_raw_sha:
+                    raw_dest = doc_dir / "source_raw.html"
+                    raw_mode = _link_or_copy(raw_html, raw_dest)
+                    copy_modes[raw_mode] += 1
+                    extra_assets.append({
+                        "kind": "raw_html_snapshot",
+                        "path": str(raw_dest.relative_to(package_root)),
+                        "sha256": actual_raw_sha,
+                        "copy_mode": raw_mode,
+                    })
+
         classification_payload = dict(row)
         classification_payload.update({
             "document_id": document_id,
@@ -155,15 +174,20 @@ def export_handoff(
             "tunnelbookai_status": "NOT_INGESTED",
             "handoff_source_path": str(source_dest.relative_to(package_root)),
             "source_sha256": actual_sha,
+            "extra_assets": extra_assets,
         })
         (doc_dir / "classification.json").write_text(
             json.dumps(classification_payload, ensure_ascii=False, indent=2), encoding="utf-8"
         )
 
         metadata = {
-            "schema_version": "1.0",
+            "schema_version": "1.1",
             "document_id": document_id,
             "title": row.get("title"),
+            "authors": row.get("authors") or [],
+            "year": row.get("year"),
+            "publisher": row.get("publisher"),
+            "doi": row.get("doi"),
             "document_type": row.get("document_type"),
             "source_class": row.get("source_class"),
             "authority_tier": row.get("authority_tier"),
@@ -176,6 +200,14 @@ def export_handoff(
             "route_path": str(route),
             "source_sha256": actual_sha,
             "source_filename": source_path.name,
+            "source_url": row.get("source_url"),
+            "landing_url": row.get("landing_url"),
+            "pdf_url": row.get("pdf_url"),
+            "discovery_source": row.get("discovery_source"),
+            "discovery_query": row.get("discovery_query"),
+            "acquisition_status": row.get("acquisition_status"),
+            "metadata_only": bool(row.get("metadata_only", False)),
+            "extra_assets": extra_assets,
             "paper_crawler_status": "READY_FOR_HANDOFF",
             "tunnelbookai_status": "NOT_INGESTED",
         }
@@ -201,9 +233,12 @@ def export_handoff(
     with checksums_path.open("w", encoding="utf-8") as handle:
         for row in manifest:
             handle.write(f"{row['source_sha256']}  {row['source_path']}\n")
+            for asset in row.get("extra_assets") or []:
+                if asset.get("sha256") and asset.get("path"):
+                    handle.write(f"{asset['sha256']}  {asset['path']}\n")
 
     handoff_report = {
-        "schema_version": "1.0",
+        "schema_version": "1.1",
         "package": package_name,
         "source_root": str(source_root),
         "package_root": str(package_root),
@@ -221,13 +256,14 @@ def export_handoff(
     )
     (registry_root / "handoff_contract.json").write_text(
         json.dumps({
-            "schema_version": "1.0",
+            "schema_version": "1.1",
             "producer": "paper-crawler-agent",
             "consumer": "TunnelBookAI",
             "manifest": "00_registry/manifest.jsonl",
             "checksums": "00_registry/checksums.sha256",
             "source_tree": "01_originals",
             "audit": "99_audit/handoff_audit.json",
+            "provenance_fields": ["source_url", "landing_url", "pdf_url", "discovery_source", "discovery_query", "doi", "publisher"],
             "consumer_rule": "TunnelBookAI must revalidate SHA256 and perform full-text conversion, quality audit, final section classification and evidence gating before corpus ingest.",
         }, ensure_ascii=False, indent=2), encoding="utf-8"
     )
