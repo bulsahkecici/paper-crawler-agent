@@ -70,10 +70,16 @@ source_classes:
       - piarc.org
   UNIVERSITY_REPOSITORY:
     default_tier: C2
+    domain_suffixes:
+      - edu.tr
+      - .edu
+      - .ac.uk
+      - .edu.au
     domain_fragments:
       - repository
       - openaccess
       - dspace
+      - eprints
       - tez.yok.gov.tr
   ACADEMIC:
     default_tier: B2
@@ -86,6 +92,7 @@ source_classes:
       - semantic_scholar
       - core
       - openaire
+      - oai_pmh
   NEWS:
     default_tier: E
   DISCOVERY_ONLY:
