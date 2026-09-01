@@ -216,18 +216,26 @@ def classify_catalog(
     for index, record in enumerate(papers, 1):
         if not isinstance(record, dict):
             continue
-        if not record.get("abstract") and record.get("text_excerpt"):
-            record = {**record, "abstract": str(record.get("text_excerpt") or "")[:6000]}
-        relevance_decision = relevance.evaluate(record)
+        # An abstract is a publisher-supplied summary. Light PDF text and web
+        # excerpts are provisional classifier input only: keep them out of the
+        # `abstract` field and feed them to the classifier via a separate,
+        # clearly-named text so downstream artifacts never conflate the two.
+        real_abstract = str(record.get("abstract") or "")
+        classification_text = real_abstract or str(
+            record.get("light_pdf_text") or record.get("text_excerpt") or ""
+        )
+        class_record = {**record, "abstract": classification_text[:6000]} if classification_text else dict(record)
+        relevance_decision = relevance.evaluate(class_record)
+        class_record = {**class_record, **relevance_decision}
         record = {**record, **relevance_decision}
         result = hybrid.classify_hybrid(
-            record,
+            class_record,
             embedding_client=emb_client,
             embedding_model=selected_embedding_model,
             llm_client=llm_client,
             llm_model=selected_llm_model,
             profile_vectors=profile_vectors,
-        ) if use_local_ai else classifier.classify_record(record).as_dict()
+        ) if use_local_ai else classifier.classify_record(class_record).as_dict()
 
         source_path = record.get("source_path") or record.get("local_pdf_path") or record.get("pdf_path") or record.get("path")
         source_exists = bool(source_path and Path(str(source_path)).expanduser().exists())
@@ -256,12 +264,16 @@ def classify_catalog(
             "raw_html_path": record.get("raw_html_path"),
             "raw_html_sha256": record.get("raw_html_sha256"),
             "metadata_only": bool(record.get("metadata_only", False)),
-            "abstract": str(record.get("abstract") or "")[:12000],
+            "abstract": real_abstract[:12000],
+            "light_pdf_text": (str(record.get("light_pdf_text") or "")[:12000] or None),
+            "classification_input": record.get("classification_input"),
+            "classification_text": classification_text[:12000],
             **relevance_decision,
             "handoff_candidate": handoff_candidate,
             **result,
         }
-        payload["evidence_level"] = corpus_policy.evidence_level({**record, **payload})
+        payload["crawler_evidence_level"] = corpus_policy.crawler_evidence_level({**record, **payload})
+        payload["evidence_level"] = payload["crawler_evidence_level"]  # migration alias
         payload["source_tier"] = corpus_policy.source_tier(payload)
         payload["normalized_document_type"] = corpus_policy.normalized_document_type(payload)
         handoff_status, handoff_reason = corpus_policy.handoff_decision(payload)

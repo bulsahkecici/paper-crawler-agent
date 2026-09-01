@@ -51,14 +51,32 @@ def write(output_dir: str | Path | None = None) -> dict[str, Any]:
         "acquisition": acquisition,
         "classification": {key: classification.get(key, 0) for key in ("documents", "classification_total", "deterministic_only", "rule_embedding_auto", "rules_embedding_only_count", "qwen_reviewed_count", "qwen_review_rate", "manual_review_count", "irrelevant_rejected_count")},
         "handoff": {
-            **{key: handoff.get(key, 0) for key in ("ready_for_handoff", "rejected")},
+            **{key: handoff.get(key, 0) for key in ("ready_for_handoff", "metadata_references", "retry_acquisition", "manual_review", "rejected")},
             "review_queue": _jsonl_count(handoff_audit / "review_queue.jsonl"),
+            "metadata_references_queue": _jsonl_count(handoff_audit / "metadata_references.jsonl"),
             "rejected_manifest": _jsonl_count(handoff_audit / "rejected_manifest.jsonl"),
             "decision_counts": handoff.get("decision_counts") or {},
         },
         "coverage": {"sections_meeting_target": sum(1 for item in gaps if not item["gap"]), "sections_below_target": sum(1 for item in gaps if item["gap"]), "worst_10_gaps": gaps[:10]},
         "dedup": {key: dedup.get(key, 0) for key in ("exact_duplicate_groups", "same_doi_groups", "canonical_url_groups", "fuzzy_review_pairs")},
         "gap_search": {key: gap.get(key) for key in ("gap_search_completed", "catalog_additions", "provider_degraded", "gap_additions_reason")},
+    }
+    index_rows = _read_jsonl_rows(root / "classification_index.jsonl")
+    evidence_counter: dict[str, int] = {}
+    acquired_originals = 0
+    for row in index_rows:
+        level = str(row.get("crawler_evidence_level") or row.get("evidence_level") or "TITLE_METADATA_ONLY")
+        evidence_counter[level] = evidence_counter.get(level, 0) + 1
+        if str(row.get("acquisition_status") or "").upper() in {"DOWNLOADED_PDF", "SNAPSHOTTED_WEB"}:
+            acquired_originals += 1
+    summary["evidence"] = {
+        "acquired_originals": acquired_originals,
+        "light_pdf_text_records": evidence_counter.get("LIGHT_PDF_TEXT", 0),
+        "web_snapshot_records": evidence_counter.get("WEB_SNAPSHOT_TEXT", 0),
+        "abstract_records": evidence_counter.get("ABSTRACT", 0),
+        "original_acquired_records": evidence_counter.get("ORIGINAL_ACQUIRED", 0),
+        "title_metadata_only_records": evidence_counter.get("TITLE_METADATA_ONLY", 0),
+        "boundary": "PaperCrawler evidence levels never include FULL_TEXT/PDF_EXTRACT; full-text is a TunnelBookAI outcome.",
     }
     classification_rows = _jsonl_count(root / "classification_index.jsonl")
     physical_sidecars = len(list((root / "classifications").glob("*.classification.json")))
@@ -81,7 +99,7 @@ def write(output_dir: str | Path | None = None) -> dict[str, Any]:
     lines += [f"- {name}: {decisions.get(name, 0)}" for name in ("AUTO_HANDOFF", "RETRY_ACQUISITION", "RECLASSIFY", "AUTO_REJECT", "MANUAL_REVIEW")]
     lines += ["", "## Handoff", f"- READY_FOR_HANDOFF: {summary['handoff']['ready_for_handoff']}", f"- Route distribution: {handoff.get('route_counts') or {}}", "", "## Coverage", f"- Sections meeting target: {summary['coverage']['sections_meeting_target']}", f"- Sections below target: {summary['coverage']['sections_below_target']}"]
     lines += [f"- {item['section']}: {item['current']}/{item['target']} (gap {item['gap']})" for item in gaps[:10]]
-    lines += ["", "## Dedup", *[f"- {key}: {value}" for key, value in summary["dedup"].items()], "", "## Health", f"- Provider degradation: {summary['gap_search'].get('provider_degraded') or False}", f"- Stale sidecars: {summary['data_integrity']['stale_classification_sidecars']}", "", "## Final Decision", "- See `corpus_quality_gate.json`; PaperCrawler readiness never implies final evidence approval.", ""]
+    lines += ["", "## Dedup", *[f"- {key}: {value}" for key, value in summary["dedup"].items()], "", "## Health", f"- Provider degradation: {summary['gap_search'].get('provider_degraded') or False}", f"- Stale sidecars: {summary['data_integrity']['stale_classification_sidecars']}", "", "## Final Decision", "- See `audit/handoff_quality_gate.json`; PaperCrawler readiness never implies final evidence approval or a canonical corpus.", ""]
     (audit / "run_summary.md").write_text("\n".join(lines), encoding="utf-8")
     section_values = {sid: int((coverage_sections.get(sid) or {}).get("handoff_candidates") or 0) for sid in ("5", "6", "4.3.5")}
     old_new = [

@@ -14,7 +14,23 @@ REJECT_STATUSES = {
     "REJECT_IRRELEVANT", "REJECT_NONCONTENT_PAGE", "REJECT_NAVIGATION",
     "REJECT_LEGAL_PAGE", "DOWNLOAD_INVALID", "DUPLICATE",
 }
-HANDOFF_EVIDENCE = {"FULL_TEXT", "PDF_EXTRACT", "ABSTRACT", "WEBPAGE_TEXT"}
+
+# PaperCrawler-side evidence vocabulary. These describe only what the crawler
+# itself inspected before handoff. PaperCrawler must never emit FULL_TEXT or
+# PDF_EXTRACT: full-text evidence is established by TunnelBookAI after Docling
+# conversion, OCR/vision and table extraction.
+CRAWLER_EVIDENCE_LEVELS = {
+    "ABSTRACT", "LIGHT_PDF_TEXT", "WEB_SNAPSHOT_TEXT",
+    "TITLE_METADATA_ONLY", "ORIGINAL_ACQUIRED",
+}
+FORBIDDEN_CRAWLER_EVIDENCE_LEVELS = {"FULL_TEXT", "PDF_EXTRACT"}
+# Legacy -> canonical evidence-level names accepted from pre-hardening artifacts.
+LEGACY_EVIDENCE_ALIASES = {
+    "FULL_TEXT": "LIGHT_PDF_TEXT",
+    "PDF_EXTRACT": "LIGHT_PDF_TEXT",
+    "WEBPAGE_TEXT": "WEB_SNAPSHOT_TEXT",
+}
+HANDOFF_EVIDENCE = CRAWLER_EVIDENCE_LEVELS
 CONFIG_PATH = Path(__file__).resolve().parent / "config" / "classification_policy.yaml"
 
 DOCUMENT_TYPE_MAP = {
@@ -31,18 +47,38 @@ DOCUMENT_TYPE_MAP = {
 }
 
 
-def evidence_level(record: dict[str, Any]) -> str:
-    if str(record.get("full_text") or record.get("text") or "").strip():
-        return "FULL_TEXT"
-    source = record.get("source_path") or record.get("local_pdf_path") or record.get("pdf_path") or record.get("path")
-    excerpt = str(record.get("text_excerpt") or "").strip()
-    if source and Path(str(source)).suffix.lower() == ".pdf" and excerpt:
-        return "PDF_EXTRACT"
-    if str(record.get("abstract") or "").strip():
-        return "ABSTRACT"
+def crawler_evidence_level(record: dict[str, Any]) -> str:
+    """Canonical PaperCrawler evidence level. Never FULL_TEXT / PDF_EXTRACT.
+
+    This reports only what the crawler inspected for provisional classification;
+    it is not a full-text or final-evidence claim.
+    """
+    explicit = str(record.get("crawler_evidence_level") or "").upper()
+    explicit = LEGACY_EVIDENCE_ALIASES.get(explicit, explicit)
+    if explicit in CRAWLER_EVIDENCE_LEVELS:
+        return explicit
+
+    classification_input = str(record.get("classification_input") or "").upper()
+    light_markers = {"LIGHT_PDF_FIRST_PAGES", "LIGHT_PDF_TEXT", "PARTIAL_PDF_TEXT"}
+    if record.get("light_pdf_text_extracted") or classification_input in light_markers:
+        return "LIGHT_PDF_TEXT"
     if str(record.get("webpage_text") or record.get("raw_text") or "").strip() or record.get("raw_html_path"):
-        return "WEBPAGE_TEXT"
+        return "WEB_SNAPSHOT_TEXT"
+    if str(record.get("abstract") or record.get("text_excerpt") or "").strip():
+        return "ABSTRACT"
+    source = record.get("source_path") or record.get("local_pdf_path") or record.get("pdf_path") or record.get("path")
+    if source and Path(str(source)).suffix.lower() == ".pdf":
+        return "ORIGINAL_ACQUIRED"
     return "TITLE_METADATA_ONLY"
+
+
+def evidence_level(record: dict[str, Any]) -> str:
+    """Backward-compatible alias. Kept so older callers/tests keep working.
+
+    Delegates to :func:`crawler_evidence_level`; it can never return FULL_TEXT or
+    PDF_EXTRACT any more.
+    """
+    return crawler_evidence_level(record)
 
 
 def source_tier(record: dict[str, Any]) -> str:

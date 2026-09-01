@@ -141,6 +141,7 @@ def export_handoff(
     queues: dict[str, list[dict[str, Any]]] = {
         decision_router.RETRY_ACQUISITION: [], decision_router.RECLASSIFY: [],
         decision_router.AUTO_REJECT: [], decision_router.MANUAL_REVIEW: [],
+        decision_router.METADATA_REFERENCE: [],
     }
     status_counts: Counter[str] = Counter()
     route_counts: Counter[str] = Counter()
@@ -150,10 +151,13 @@ def export_handoff(
     for row in rows:
         status = str(row.get("classification_status") or "")
         row = dict(row)
-        row["evidence_level"] = str(row.get("evidence_level") or corpus_policy.evidence_level(row))
+        row["crawler_evidence_level"] = corpus_policy.crawler_evidence_level(row)
+        row["evidence_level"] = row["crawler_evidence_level"]  # migration alias
         row["source_tier"] = str(row.get("source_tier") or corpus_policy.source_tier(row))
         row["normalized_document_type"] = str(row.get("normalized_document_type") or corpus_policy.normalized_document_type(row))
-        recheck = relevance.evaluate(row, text_override=str(row.get("abstract") or ""))
+        recheck = relevance.evaluate(row, text_override=str(
+            row.get("abstract") or row.get("classification_text") or row.get("light_pdf_text") or ""
+        ))
         row = {**row, **recheck}
         source_value = row.get("source_path")
         source_path = Path(str(source_value)).expanduser() if source_value else None
@@ -175,20 +179,26 @@ def export_handoff(
             continue
         seen_ids.add(document_id)
 
-        # AUTO_HANDOFF normally has a physical source.  The only exception is an
-        # explicitly flagged official metadata record, which carries no checksum.
-        metadata_only_exception = not source_exists
+        # READY_FOR_HANDOFF requires a physical source with a checksum. A record
+        # with no ingestable content is a METADATA_REFERENCE, never a handoff
+        # source, and must not inflate the READY_FOR_HANDOFF count.
+        if not (source_path is not None and source_exists and actual_sha):
+            seen_ids.discard(document_id)
+            reference = decision_router._decision(
+                decision_router.METADATA_REFERENCE,
+                "reference_metadata_without_ingestable_content",
+                "retain as REFERENCE_ONLY or acquisition-retry lead",
+            )
+            queues[decision_router.METADATA_REFERENCE].append(decision_router.queue_entry(row, reference))
+            continue
 
         route = _safe_route(str(row.get("route_path") or ""))
         doc_dir = originals_root / route / document_id
         doc_dir.mkdir(parents=True, exist_ok=True)
-        source_dest = None
-        copy_mode = "metadata_only_official_exception"
-        if source_path is not None and source_exists:
-            suffix = source_path.suffix.lower() or ".bin"
-            source_dest = doc_dir / ("source" + suffix)
-            copy_mode = _link_or_copy(source_path, source_dest)
-            copy_modes[copy_mode] += 1
+        suffix = source_path.suffix.lower() or ".bin"
+        source_dest = doc_dir / ("source" + suffix)
+        copy_mode = _link_or_copy(source_path, source_dest)
+        copy_modes[copy_mode] += 1
 
         extra_assets: list[dict[str, Any]] = []
         raw_html_value = row.get("raw_html_path")
@@ -208,24 +218,60 @@ def export_handoff(
                         "copy_mode": raw_mode,
                     })
 
+        primary_section = row.get("primary_section")
+        secondary_sections = [
+            str(s.get("id") if isinstance(s, dict) else s)
+            for s in (row.get("book_sections") or [])
+            if (s.get("id") if isinstance(s, dict) else s) and (s.get("id") if isinstance(s, dict) else s) != primary_section
+        ]
+        raw_dest_rel = next((a["path"] for a in extra_assets if a.get("kind") == "raw_html_snapshot"), None)
+        source_representation = {
+            "original_or_raw": raw_dest_rel or str(source_dest.relative_to(package_root)),
+            "crawler_normalized": None,
+            "crawler_normalized_status": "PROVISIONAL",
+            "note": "TunnelBookAI produces the final normalized Markdown during ingest.",
+        }
+        provisional_block = {
+            "provisional_document_type": row.get("normalized_document_type") or row.get("document_type"),
+            "provisional_source_tier": row.get("source_tier"),
+            "provisional_authority_tier": row.get("authority_tier"),
+            "provisional_primary_section": primary_section,
+            "provisional_secondary_sections": secondary_sections,
+            "provisional_section_confidence": row.get("classification_confidence"),
+            "provisional_classification_status": status,
+            "final_document_type": None,
+            "final_source_tier": None,
+            "final_primary_section": None,
+            "final_secondary_sections": [],
+            "final_section_status": "NOT_EVALUATED",
+            "final_evidence_status": "NOT_EVALUATED",
+        }
+
         classification_payload = dict(row)
         classification_payload.update({
             "document_id": document_id,
+            "producer": "paper-crawler-agent",
+            "source_kind": "EXTERNAL_DISCOVERY",
             "paper_crawler_status": "READY_FOR_HANDOFF",
             "tunnelbookai_status": "NOT_INGESTED",
-            "handoff_source_path": str(source_dest.relative_to(package_root)) if source_dest else None,
+            "handoff_source_path": str(source_dest.relative_to(package_root)),
             "source_sha256": actual_sha or None,
+            "crawler_evidence_level": row.get("crawler_evidence_level"),
             "extra_assets": extra_assets,
-            "final_evidence_status": "NOT_EVALUATED",
+            "source_representation": source_representation,
+            **provisional_block,
         })
         (doc_dir / "classification.json").write_text(
             json.dumps(classification_payload, ensure_ascii=False, indent=2), encoding="utf-8"
         )
 
         metadata = {
-            "schema_version": "1.1",
+            "schema_version": "2.0",
             "document_id": document_id,
             "canonical_id": row.get("canonical_id") or "CAN_" + document_id.removeprefix("PC_"),
+            "canonical_hint_id": row.get("canonical_id") or "CAN_" + document_id.removeprefix("PC_"),
+            "producer": "paper-crawler-agent",
+            "source_kind": "EXTERNAL_DISCOVERY",
             "title": row.get("title"),
             "authors": row.get("authors") or [],
             "year": row.get("year"),
@@ -234,11 +280,12 @@ def export_handoff(
             "document_type": row.get("document_type"),
             "normalized_document_type": row.get("normalized_document_type"),
             "source_tier": row.get("source_tier"),
+            "crawler_evidence_level": row.get("crawler_evidence_level"),
             "evidence_level": row.get("evidence_level"),
             "source_class": row.get("source_class"),
             "authority_tier": row.get("authority_tier"),
             "evidence_priority": row.get("evidence_priority"),
-            "primary_section": row.get("primary_section"),
+            "primary_section": primary_section,
             "book_sections": row.get("book_sections") or [],
             "topics": row.get("topics") or [],
             "classification_confidence": row.get("classification_confidence"),
@@ -254,11 +301,11 @@ def export_handoff(
             "acquisition_status": row.get("acquisition_status"),
             "metadata_only": bool(row.get("metadata_only", False)),
             "extra_assets": extra_assets,
+            "source_representation": source_representation,
             "paper_crawler_status": "READY_FOR_HANDOFF",
-            "provisional_authority_tier": row.get("authority_tier"),
-            "final_evidence_status": "NOT_EVALUATED",
             "tunnelbookai_status": "NOT_INGESTED",
-            "metadata_only_official_exception": metadata_only_exception,
+            "metadata_only_official_exception": False,
+            **provisional_block,
         }
         if "piarc" in str(row.get("source_url") or row.get("landing_url") or "").casefold():
             metadata["parent_document"] = row.get("parent_document") or "PIARC Road Tunnels Manual"
@@ -284,24 +331,42 @@ def export_handoff(
 
     handoff_manifest = []
     for row in manifest:
+        canonical_hint = row.get("canonical_hint_id") or row.get("canonical_id") or "CAN_" + str(row.get("source_sha256") or "")[:20].upper()
         handoff_manifest.append({
+            "schema_version": "2.0",
             "document_id": row.get("document_id"),
-            "canonical_id": row.get("canonical_id") or "CAN_" + str(row.get("source_sha256") or "")[:20].upper(),
+            "canonical_id": canonical_hint,
+            "canonical_hint_id": canonical_hint,
+            "producer": "paper-crawler-agent",
+            "source_kind": "EXTERNAL_DISCOVERY",
             "title": row.get("title"), "authors": row.get("authors") or [], "year": row.get("year"),
             "doi": row.get("doi"), "source_url": row.get("source_url"),
+            "landing_url": row.get("landing_url"),
             "resolved_url": row.get("pdf_url") or row.get("landing_url") or row.get("source_url"),
             "local_path": row.get("source_path"), "sha256": row.get("source_sha256"),
-            "source_name": row.get("discovery_source"), "source_tier": row.get("source_tier"),
-            "document_type": row.get("normalized_document_type"), "primary_section": row.get("primary_section"),
-            "secondary_sections": [s.get("id") for s in row.get("book_sections") or [] if s.get("id") != row.get("primary_section")],
-            "classification_status": row.get("classification_status"),
-            "classification_confidence": row.get("classification_confidence"),
-            "evidence_level": row.get("evidence_level"), "acquisition_status": row.get("acquisition_status"),
+            "source_name": row.get("discovery_source"),
+            "route_path": row.get("route_path"),
+            "crawler_evidence_level": row.get("crawler_evidence_level"),
+            "evidence_level": row.get("evidence_level"),
+            "acquisition_status": row.get("acquisition_status"),
+            "source_representation": row.get("source_representation"),
+            "provisional_document_type": row.get("provisional_document_type"),
+            "provisional_source_tier": row.get("provisional_source_tier"),
+            "provisional_authority_tier": row.get("provisional_authority_tier") or row.get("authority_tier"),
+            "provisional_primary_section": row.get("provisional_primary_section"),
+            "provisional_secondary_sections": row.get("provisional_secondary_sections") or [],
+            "provisional_section_confidence": row.get("provisional_section_confidence"),
+            "provisional_classification_status": row.get("provisional_classification_status"),
+            "final_document_type": None,
+            "final_source_tier": None,
+            "final_primary_section": None,
+            "final_secondary_sections": [],
+            "final_section_status": "NOT_EVALUATED",
+            "final_evidence_status": "NOT_EVALUATED",
             "handoff_status": "READY_FOR_HANDOFF",
             "paper_crawler_status": "READY_FOR_HANDOFF",
-            "provisional_authority_tier": row.get("provisional_authority_tier") or row.get("authority_tier"),
-            "final_evidence_status": "NOT_EVALUATED", "tunnelbookai_status": "NOT_INGESTED",
-            "metadata_only_official_exception": bool(row.get("metadata_only_official_exception")),
+            "tunnelbookai_status": "NOT_INGESTED",
+            "metadata_only_official_exception": False,
             "provenance": {key: row.get(key) for key in ("source_url", "landing_url", "pdf_url", "discovery_source", "discovery_query", "doi", "publisher") if row.get(key)},
         })
     _write_jsonl(registry_root / "handoff_manifest.jsonl", handoff_manifest)
@@ -315,13 +380,20 @@ def export_handoff(
                 if asset.get("sha256") and asset.get("path"):
                     handle.write(f"{asset['sha256']}  {asset['path']}\n")
 
+    metadata_reference_queue = queues[decision_router.METADATA_REFERENCE]
     handoff_report = {
-        "schema_version": "1.1",
+        "schema_version": "2.0",
         "package": package_name,
+        "producer": "paper-crawler-agent",
+        "consumer": "TunnelBookAI",
         "source_root": str(source_root),
         "package_root": str(package_root),
         "input_classifications": len(rows),
         "ready_for_handoff": len(manifest),
+        "metadata_references": len(metadata_reference_queue),
+        "retry_acquisition": len(queues[decision_router.RETRY_ACQUISITION]),
+        "manual_review": len(queues[decision_router.MANUAL_REVIEW]),
+        "reclassify": len(queues[decision_router.RECLASSIFY]),
         "rejected": len(queues[decision_router.AUTO_REJECT]),
         "decision_counts": {
             decision_router.AUTO_HANDOFF: len(manifest),
@@ -331,7 +403,7 @@ def export_handoff(
         "route_counts": dict(route_counts),
         "copy_modes": dict(copy_modes),
         "rejections": queues[decision_router.AUTO_REJECT],
-        "gate_meaning": "READY_FOR_HANDOFF means safe and sufficiently classified for TunnelBookAI processing; it is not final evidence approval.",
+        "gate_meaning": "READY_FOR_HANDOFF means a safe, integrity-checked source package for TunnelBookAI ingest; it is not final evidence and not a canonical corpus. METADATA_REFERENCE records are excluded from READY_FOR_HANDOFF.",
     }
     (audit_root / "handoff_audit.json").write_text(
         json.dumps(handoff_report, ensure_ascii=False, indent=2), encoding="utf-8"
@@ -343,6 +415,7 @@ def export_handoff(
     _write_jsonl(audit_root / "review_queue.jsonl", review_queue)
     _write_jsonl(audit_root / "retry_acquisition.jsonl", retry_queue)
     _write_jsonl(audit_root / "reclassify_queue.jsonl", reclassify_queue)
+    _write_jsonl(audit_root / "metadata_references.jsonl", metadata_reference_queue)
     _write_jsonl(audit_root / "rejected_manifest.jsonl", rejected)
     decision_summary = handoff_report["decision_counts"]
     (audit_root / "decision_summary.json").write_text(
@@ -366,24 +439,77 @@ def export_handoff(
     ))
     (registry_root / "handoff_contract.json").write_text(
         json.dumps({
-            "schema_version": "1.1",
+            "schema_version": "2.0",
             "producer": "paper-crawler-agent",
             "consumer": "TunnelBookAI",
+            "producer_responsibilities": [
+                "discovery",
+                "source acquisition",
+                "source integrity (byte SHA256)",
+                "source metadata preservation",
+                "bibliographic dedup",
+                "provisional relevance",
+                "provisional classification (document type, source tier, section hints)",
+                "provisional coverage and gap discovery",
+                "provenance",
+            ],
+            "consumer_responsibilities": [
+                "full content conversion",
+                "Docling processing",
+                "page snapshots",
+                "embedded image extraction",
+                "OCR/vision",
+                "table extraction",
+                "metadata enrichment",
+                "global content dedup",
+                "final section classification",
+                "evidence evaluation",
+                "corpus quality gate",
+                "canonical ingest",
+            ],
+            "semantic_rules": {
+                "READY_FOR_HANDOFF": "Safe, integrity-checked source package ready for TunnelBookAI ingest processing; not canonical evidence and not a canonical corpus.",
+                "METADATA_REFERENCE": "Reference metadata without ingestable source content; excluded from READY_FOR_HANDOFF. TunnelBookAI may treat it as REFERENCE_ONLY or an acquisition-retry lead.",
+                "LIGHT_PDF_TEXT": "Partial first-pages text used only for provisional classification; not full-text evidence.",
+                "crawler_evidence_level": "PaperCrawler evidence vocabulary (ABSTRACT, LIGHT_PDF_TEXT, WEB_SNAPSHOT_TEXT, TITLE_METADATA_ONLY, ORIGINAL_ACQUIRED). Never FULL_TEXT or PDF_EXTRACT.",
+                "provisional_primary_section": "Discovery-time section hint. TunnelBookAI must reclassify full normalized content before corpus ingest.",
+                "source_representation": "original_or_raw is the authoritative captured source; crawler_normalized is PROVISIONAL and never the final corpus Markdown.",
+                "final_*": "All final_* fields (final_primary_section, final_section_status, final_evidence_status, ...) are owned by TunnelBookAI and are NOT_EVALUATED at handoff.",
+            },
+            "state_machine": {
+                "paper_crawler_status": ["READY_FOR_HANDOFF", "METADATA_REFERENCE", "RETRY_ACQUISITION", "MANUAL_REVIEW", "AUTO_REJECT"],
+                "tunnelbookai_status": ["NOT_INGESTED"],
+            },
+            "package_layout": {
+                "00_registry/handoff_contract.json": "this file",
+                "00_registry/manifest.jsonl": "full internal manifest",
+                "00_registry/handoff_manifest.jsonl": "authoritative consumer manifest",
+                "00_registry/checksums.sha256": "byte checksums for every packaged file",
+                "01_originals/": "acquired original sources by route",
+                "99_audit/handoff_quality_gate.json": "fail-closed gate decision (GO/CONDITIONAL_GO/NO_GO)",
+                "99_audit/review_queue.jsonl": "records needing human judgement",
+                "99_audit/retry_acquisition.jsonl": "records to reacquire",
+                "99_audit/metadata_references.jsonl": "reference metadata without ingestable content",
+                "99_audit/rejected_manifest.jsonl": "deterministic rejects with retained provenance",
+            },
             "manifest": "00_registry/manifest.jsonl",
             "handoff_manifest": "00_registry/handoff_manifest.jsonl",
             "checksums": "00_registry/checksums.sha256",
             "source_tree": "01_originals",
             "audit": "99_audit/handoff_audit.json",
+            "quality_gate": "99_audit/handoff_quality_gate.json",
             "review_queue": "99_audit/review_queue.jsonl",
             "retry_acquisition": "99_audit/retry_acquisition.jsonl",
             "reclassify_queue": "99_audit/reclassify_queue.jsonl",
+            "metadata_references": "99_audit/metadata_references.jsonl",
             "rejected_manifest": "99_audit/rejected_manifest.jsonl",
             "provenance_fields": ["source_url", "landing_url", "pdf_url", "discovery_source", "discovery_query", "doi", "publisher"],
-            "consumer_rule": "TunnelBookAI must revalidate SHA256 and perform full-text conversion, quality audit, final section classification and evidence gating before corpus ingest.",
+            "consumer_rule": "TunnelBookAI must revalidate SHA256, then perform full-content conversion, quality audit, final section classification and evidence gating before corpus ingest. PaperCrawler never writes a canonical corpus.",
         }, ensure_ascii=False, indent=2), encoding="utf-8"
     )
 
     print(f"READY_FOR_HANDOFF: {len(manifest)}")
+    print(f"METADATA_REFERENCE: {len(metadata_reference_queue)}")
     print(f"Decision routes: {handoff_report['decision_counts']}")
     print(f"Package: {package_root}")
     return handoff_report

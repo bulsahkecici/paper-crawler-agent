@@ -14,7 +14,7 @@ from typing import Any
 AUDIT_FILES = (
     "run_summary.json", "run_summary.md", "provider_health.json", "source_health.json",
     "coverage.json", "source_dedup_version_audit.json", "duplicate_audit.json",
-    "decision_summary.json", "corpus_quality_gate.json",
+    "decision_summary.json", "handoff_quality_gate.json", "corpus_quality_gate.json",
 )
 
 

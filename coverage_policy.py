@@ -32,7 +32,7 @@ def calculate(records: Iterable[dict[str, Any]], *, include_review_in_discovered
     for record in records:
         status = str(record.get("classification_status") or "")
         decision, _ = corpus_policy.handoff_decision(record)
-        evidence = str(record.get("evidence_level") or corpus_policy.evidence_level(record))
+        evidence = str(record.get("crawler_evidence_level") or corpus_policy.crawler_evidence_level(record))
         is_rejected = decision == "REJECT"
         is_review = decision == "REVIEW"
         relevance_status = str(record.get("relevance_status") or "")
@@ -50,7 +50,7 @@ def calculate(records: Iterable[dict[str, Any]], *, include_review_in_discovered
             "accepted_count": status in corpus_policy.AUTO_HANDOFF,
             "review_count": is_review,
             "corpus_eligible_count": eligible,
-            "fulltext_count": evidence in {"FULL_TEXT", "PDF_EXTRACT", "WEBPAGE_TEXT"},
+            "inspected_text_count": evidence in {"LIGHT_PDF_TEXT", "WEB_SNAPSHOT_TEXT", "ABSTRACT", "ORIGINAL_ACQUIRED"},
         }
         for name, enabled in dimensions.items():
             if enabled:

@@ -1,10 +1,65 @@
-# PaperCrawler v1.0.0-rc1
+# PaperCrawler v1.0.0
 
 TunnelBookAI için **kaynak keşfi → indirme/snapshot → sınıflandırma → coverage audit → gap search → handoff** hazırlayan ayrı bir staging projesidir.
 
 ## Temel sınır
 
-PaperCrawler canonical TunnelBookAI corpus'unu oluşturmaz. Çıktıları `READY_FOR_HANDOFF` seviyesine getirir. TunnelBookAI daha sonra SHA256 doğrulaması, full-text/Docling dönüşümü, kalite audit'i, final bölüm sınıflandırması ve evidence gate uyguladıktan sonra corpus'a ingest eder.
+PaperCrawler internetten ve açık kaynak sistemlerinden tünelle ilgili kaynakları
+keşfeder, güvenli acquisition yapar, provenance ve byte SHA256 üretir,
+bibliographic dedup uygular, **provisional** relevance/section classification ve
+coverage-gap analizi yapar ve doğrulanabilir bir `READY_FOR_HANDOFF` paketi
+üretir.
+
+PaperCrawler **yapmaz**: full content conversion, final Docling pipeline,
+Word/PPTX/XLSX dönüştürme, final OCR/vision, final image extraction, final corpus
+section classification, final evidence evaluation, canonical corpus ingest. Bu
+görevlerin tamamı **TunnelBookAI Unified Ingest Engine**'e aittir.
+
+Üç kural handoff boundary'de kesindir:
+
+```text
+READY_FOR_HANDOFF   ≠  CANONICAL_CORPUS
+LIGHT_PDF_TEXT      ≠  FULL_TEXT
+PAPERCRAWLER SECTION =  PROVISIONAL  (final section = TunnelBookAI)
+```
+
+`METADATA_REFERENCE` kayıtları (fiziksel içeriği olmayan resmî/bibliyografik
+referanslar) `READY_FOR_HANDOFF` sayısına **dahil edilmez**; ayrı raporlanır.
+
+## Nihai mimari
+
+```text
+External sources
+      ↓
+PaperCrawler
+      ↓
+READY_FOR_HANDOFF
+      ↓
+──────────────  HANDOFF CONTRACT (docs/handoff_contract.md)  ──────────────
+      ↓
+TunnelBookAI  incoming/crawler
+      ↓
+Unified Ingest Engine
+      ↓
+Full conversion / Docling
+      ↓
+Page snapshots · image extraction · OCR/vision · table extraction
+      ↓
+Global content dedup
+      ↓
+Final section classification
+      ↓
+Evidence evaluation
+      ↓
+Corpus Quality Gate      (TunnelBookAI'a ait; PaperCrawler bu ismi sahiplenmez)
+      ↓
+corpus/staging → corpus/canonical
+```
+
+`corpus_quality_gate` adı ve canonical corpus yazımı TunnelBookAI'a aittir.
+PaperCrawler tarafındaki fail-closed gate `handoff_quality_gate.py`'dir ve
+`audit/handoff_quality_gate.json` yazar (`audit/corpus_quality_gate.json` yalnız
+deprecated alias'tır).
 
 ## Ücretli arama API'si yok
 
@@ -88,8 +143,19 @@ python prepare_tunnelbookai_handoff.py --output-dir tunel_makaleleri --resume
 ```
 
 Yeni bir checkpoint başlatmak (mevcut PDF ve kullanıcı verilerini silmeden) için
-`--fresh-run` kullanılabilir. Final handoff yalnız `corpus_quality_gate.json`
+`--fresh-run` kullanılabilir. Final handoff yalnız `audit/handoff_quality_gate.json`
 kararı ve `00_registry/handoff_manifest.jsonl` üzerinden tüketilmelidir.
+
+Handoff paketi başka bir dizine (ör. TunnelBookAI `incoming/crawler/<release_id>`)
+yazılabilir:
+
+```bash
+python prepare_tunnelbookai_handoff.py \
+  --destination ~/Projects/tunnelbookai_v1/incoming/crawler/RELEASE_2026_09_01
+```
+
+PaperCrawler tunnelbookai_v1 iç yapısını bilmez; yalnızca destination path'e
+self-contained paket yazar.
 
 ## 2. Ücretsiz kaynak keşfi
 
@@ -145,17 +211,22 @@ Sadece deterministik kurallar:
 python classify_catalog.py --rules-only
 ```
 
-Sınıflandırma eksenleri:
+Sınıflandırma eksenleri (hepsi PaperCrawler seviyesinde **provisional**'dır):
 
-- `document_type`
-- `source_class`
-- `authority_tier`
-- `book_sections`
+- `provisional_document_type` (`document_type`)
+- `provisional_source_tier` / `authority_tier`
+- `provisional_primary_section` + `provisional_secondary_sections` (`book_sections`)
 - `topics`
-- `classification_confidence`
+- `provisional_section_confidence` (`classification_confidence`)
 - `route_path`
-- `classification_status`
+- `provisional_classification_status` (`classification_status`)
 - `handoff_candidate`
+- `crawler_evidence_level` ∈ {`ABSTRACT`, `LIGHT_PDF_TEXT`, `WEB_SNAPSHOT_TEXT`, `TITLE_METADATA_ONLY`, `ORIGINAL_ACQUIRED`} — asla `FULL_TEXT`/`PDF_EXTRACT` değil
+
+Handoff manifestindeki her kayıt `final_primary_section: null`,
+`final_section_status: NOT_EVALUATED`, `final_evidence_status: NOT_EVALUATED`
+taşır. Final section/evidence kararını TunnelBookAI normalize edilmiş tam içerik
+üzerinden verir.
 
 Coverage beş ayrı düzeyi raporlar: `raw_matches`, `relevant_matches`,
 `acquired_matches`, `handoff_candidates` ve `authority_weighted_score`. Gap search
@@ -190,24 +261,29 @@ python handoff_export.py
 tunel_makaleleri/exports/TunnelBookAI_Source_Pack/
 ├── 00_registry/
 │   ├── manifest.jsonl
+│   ├── handoff_manifest.jsonl        # authoritative consumer manifest (schema 2.0)
 │   ├── checksums.sha256
-│   └── handoff_contract.json
+│   └── handoff_contract.json         # producer/consumer responsibilities + semantic rules
 ├── 01_originals/
-│   ├── A_OFFICIAL/
-│   ├── B_STANDARDS_GUIDELINES/
-│   ├── C_ACADEMIC/
-│   ├── D_REPORTS_BOOKS/
-│   └── E_NEWS_CASES/
+│   ├── A_OFFICIAL/  B_STANDARDS_GUIDELINES/  C_ACADEMIC/  D_REPORTS_BOOKS/  E_NEWS_CASES/
 └── 99_audit/
     ├── handoff_audit.json
+    ├── handoff_quality_gate.json     # GO / CONDITIONAL_GO / NO_GO
     ├── decision_summary.json
     ├── review_queue.jsonl
     ├── retry_acquisition.jsonl
+    ├── metadata_references.jsonl     # reference metadata, NOT in READY_FOR_HANDOFF
     ├── reclassify_queue.jsonl
     └── rejected_manifest.jsonl
 ```
 
-Web kaynaklarında normalize edilmiş `source.md` ana handoff kaynağıdır; mevcutsa ham `source_raw.html` da ek asset olarak pakete alınır ve SHA256 listesine yazılır. DOI, publisher, source URL, discovery source/query gibi provenance alanları handoff metadata'sında korunur.
+Web kaynaklarında `source_representation.original_or_raw` (mümkünse ham
+`source_raw.html`) authoritative yakalanmış temsildir; `crawler_normalized`
+PaperCrawler'ın **provisional** normalizasyonudur ve final corpus Markdown'ı
+sayılmaz — onu TunnelBookAI kendi ingest pipeline'ında üretir. Ham HTML
+mevcutsa ek asset olarak pakete alınır ve SHA256 listesine yazılır. DOI,
+publisher, source URL, discovery source/query gibi provenance alanları handoff
+metadata'sında korunur.
 
 İnsanlar yalnız `audit/review_queue.csv` dosyasını inceler. Eksik kaynaklar
 `retry_acquisition.csv`, açık sınıflandırma çelişkileri `reclassify_queue.csv`,

@@ -15,6 +15,7 @@ import requests
 
 import bibliographic_dedup as bd
 import corpus_quality_gate
+import handoff_quality_gate
 import coverage_policy
 import free_discovery as discovery
 import gap_discovery
@@ -175,6 +176,13 @@ class SourceHealthTests(unittest.TestCase):
         self.assertEqual(session.calls, 1)
 
 
+CONTRACT_STUB = {
+    "schema_version": "2.0", "producer": "paper-crawler-agent", "consumer": "TunnelBookAI",
+    "producer_responsibilities": ["discovery"], "consumer_responsibilities": ["canonical ingest"],
+    "semantic_rules": {"READY_FOR_HANDOFF": "not canonical"},
+}
+
+
 class QualityGateTests(unittest.TestCase):
     def fixture(self) -> Path:
         root = Path(tempfile.mkdtemp())
@@ -182,30 +190,59 @@ class QualityGateTests(unittest.TestCase):
         stages = {stage: "COMPLETED" for stage in pipeline_state.STAGES}
         (audit / "pipeline_state.json").write_text(json.dumps({"stages": stages}))
         (audit / "classification_audit.json").write_text(json.dumps({"reconciliation": {"invariant_ok": True, "dedup_removed": 1}, "coverage": {"parent_aggregation": True}}))
-        (root / "classification_index.jsonl").write_text(json.dumps({"evidence_level": "ABSTRACT"}) + "\n")
+        (root / "classification_index.jsonl").write_text(json.dumps({"crawler_evidence_level": "ABSTRACT"}) + "\n")
         package = root / "exports" / "TunnelBookAI_Source_Pack"; (package / "00_registry").mkdir(parents=True); (package / "99_audit").mkdir()
         source = package / "source.pdf"; source.write_bytes(b"pdf")
-        manifest = {"canonical_id": "CAN_1", "sha256": hashlib.sha256(b"pdf").hexdigest(), "local_path": "source.pdf", "provenance": {"source_url": "https://x"}}
+        manifest = {
+            "document_id": "PC_1", "canonical_id": "CAN_1", "canonical_hint_id": "CAN_1",
+            "sha256": hashlib.sha256(b"pdf").hexdigest(), "local_path": "source.pdf",
+            "provenance": {"source_url": "https://x"}, "route_path": "C_ACADEMIC/ARTICLES",
+            "crawler_evidence_level": "ABSTRACT", "paper_crawler_status": "READY_FOR_HANDOFF",
+            "provisional_primary_section": None, "final_primary_section": None,
+            "final_section_status": "NOT_EVALUATED",
+            "source_representation": {"original_or_raw": "source.pdf", "crawler_normalized": None},
+        }
         (package / "00_registry" / "handoff_manifest.jsonl").write_text(json.dumps(manifest) + "\n")
+        (package / "00_registry" / "handoff_contract.json").write_text(json.dumps(CONTRACT_STUB))
         (package / "99_audit" / "review_queue.jsonl").write_text("")
+        (package / "99_audit" / "metadata_references.jsonl").write_text("")
         (package / "99_audit" / "rejected_manifest.jsonl").write_text("")
         return root
 
     def test_incomplete_pipeline_no_go(self):
         root = self.fixture(); (root / "audit" / "pipeline_state.json").write_text(json.dumps({"stages": {}}))
-        self.assertEqual(corpus_quality_gate.evaluate(root)["decision"], "NO_GO")
+        self.assertEqual(handoff_quality_gate.evaluate_handoff(root)["decision"], "NO_GO")
 
     def test_reconciliation_error_no_go(self):
         root = self.fixture(); (root / "audit" / "classification_audit.json").write_text(json.dumps({"reconciliation": {"invariant_ok": False}, "coverage": {"parent_aggregation": True}}))
-        self.assertEqual(corpus_quality_gate.evaluate(root)["decision"], "NO_GO")
+        self.assertEqual(handoff_quality_gate.evaluate_handoff(root)["decision"], "NO_GO")
 
     def test_duplicate_canonical_id_no_go(self):
         root = self.fixture(); path = root / "exports" / "TunnelBookAI_Source_Pack" / "00_registry" / "handoff_manifest.jsonl"
-        row = json.loads(path.read_text()); row2 = {**row, "sha256": "def", "local_path": "source2.pdf"}; (path.parent.parent / "source2.pdf").write_bytes(b"pdf2")
+        row = json.loads(path.read_text()); row2 = {**row, "document_id": "PC_2", "sha256": "def", "local_path": "source2.pdf"}; (path.parent.parent / "source2.pdf").write_bytes(b"pdf2")
         path.write_text(json.dumps(row) + "\n" + json.dumps(row2) + "\n")
-        self.assertEqual(corpus_quality_gate.evaluate(root)["decision"], "NO_GO")
+        self.assertEqual(handoff_quality_gate.evaluate_handoff(root)["decision"], "NO_GO")
+
+    def test_metadata_reference_marked_ready_no_go(self):
+        root = self.fixture(); path = root / "exports" / "TunnelBookAI_Source_Pack" / "00_registry" / "handoff_manifest.jsonl"
+        row = json.loads(path.read_text()); row["paper_crawler_status"] = "METADATA_REFERENCE"
+        path.write_text(json.dumps(row) + "\n")
+        result = handoff_quality_gate.evaluate_handoff(root)
+        self.assertEqual(result["decision"], "NO_GO")
+        self.assertIn("metadata_reference_marked_ready", result["blocking_issues"])
+
+    def test_papercrawler_fulltext_claim_no_go(self):
+        root = self.fixture()
+        (root / "classification_index.jsonl").write_text(json.dumps({"crawler_evidence_level": "FULL_TEXT"}) + "\n")
+        result = handoff_quality_gate.evaluate_handoff(root)
+        self.assertIn("invalid_papercrawler_fulltext_claim", result["blocking_issues"])
 
     def test_valid_complete_run_go(self):
+        result = handoff_quality_gate.evaluate_handoff(self.fixture())
+        self.assertEqual(result["decision"], "GO")
+        self.assertEqual(result["gate"], "handoff_quality_gate")
+
+    def test_deprecated_shim_still_works(self):
         self.assertEqual(corpus_quality_gate.evaluate(self.fixture())["decision"], "GO")
 
 
