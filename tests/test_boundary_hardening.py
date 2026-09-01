@@ -9,6 +9,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import classify_catalog
 import corpus_policy
 import decision_router
 import handoff_export
@@ -49,6 +50,29 @@ class EvidenceSemanticsTests(unittest.TestCase):
     def test_no_text_layer_is_title_metadata_only(self) -> None:
         self.assertEqual(corpus_policy.crawler_evidence_level({"title": "Tunnel"}), "TITLE_METADATA_ONLY")
 
+    def test_light_pdf_text_never_becomes_an_abstract(self) -> None:
+        root = Path(tempfile.mkdtemp(prefix="light_pdf_sep_"))
+        harvest.set_output_dir(root)
+        (root / "catalog.json").write_text(json.dumps({"papers": []}), encoding="utf-8")
+        pdf, sha = _pdf(root, "t.pdf", b"%PDF-1.4\n%%EOF\n")
+        row = {  # shape produced by light_pdf_extract for a text-layer PDF, no real abstract
+            "title": "Road tunnel ventilation energy optimization", "source": "crossref",
+            "discovery_source": "crossref", "discovery_query": "road tunnel ventilation",
+            "source_path": str(pdf), "source_sha256": sha, "acquisition_status": "DOWNLOADED_PDF",
+            "document_type": "JOURNAL_ARTICLE", "source_url": "https://ex.org/a",
+            "light_pdf_text": "Road tunnel ventilation and jet fan energy optimization for operating cost reduction.",
+            "classification_input": "LIGHT_PDF_FIRST_PAGES", "light_pdf_text_extracted": True,
+            "crawler_evidence_level": "LIGHT_PDF_TEXT",
+        }
+        (root / "discovery_catalog.jsonl").write_text(json.dumps(row) + "\n", encoding="utf-8")
+        classify_catalog.classify_catalog(root, use_local_ai=False)
+        payload = json.loads((root / "classification_index.jsonl").read_text().splitlines()[0])
+        self.assertEqual(payload["abstract"], "")
+        self.assertIn("ventilation", payload["classification_text"])
+        self.assertEqual(payload["classification_input"], "LIGHT_PDF_FIRST_PAGES")
+        self.assertEqual(payload["crawler_evidence_level"], "LIGHT_PDF_TEXT")
+        self.assertTrue(payload["primary_section"])  # classifier still had input
+
     def test_light_pdf_audit_has_no_full_text_metric(self) -> None:
         root = Path(tempfile.mkdtemp(prefix="light_pdf_boundary_"))
         harvest.set_output_dir(root)
@@ -81,6 +105,15 @@ class MetadataReferenceTests(unittest.TestCase):
     def test_plain_missing_source_still_retries(self) -> None:
         row = self._record(source_url="https://example.org/x")
         self.assertEqual(decision_router.route(row, source_exists=False)["decision"], "RETRY_ACQUISITION")
+
+    def test_official_source_with_url_is_retried_before_reference_fallback(self) -> None:
+        # An acquirable official page must be reacquired, not filed as metadata.
+        row = self._record(source_class="INT_OFFICIAL", pdf_url="https://fhwa.dot.gov/tunnel.pdf")
+        self.assertEqual(decision_router.route(row, source_exists=False)["decision"], "RETRY_ACQUISITION")
+
+    def test_official_source_hard_failure_is_kept_as_reference(self) -> None:
+        row = self._record(source_class="INT_OFFICIAL", source_url="https://piarc.org/x", acquisition_status="LOGIN_ONLY")
+        self.assertEqual(decision_router.route(row, source_exists=False)["decision"], "METADATA_REFERENCE")
 
     def test_metadata_reference_excluded_from_ready_and_written_to_queue(self) -> None:
         root = Path(tempfile.mkdtemp(prefix="metaref_export_"))

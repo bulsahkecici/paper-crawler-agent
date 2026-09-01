@@ -80,18 +80,32 @@ def route(record: dict[str, Any], *, source_exists: bool | None = None, sha_vali
     path = _source_path(record)
     exists = bool(path and path.is_file()) if source_exists is None else source_exists
 
+    metadata_reference = is_metadata_reference(record)
+    acquisition_target = bool(record.get("pdf_url") or record.get("source_url") or record.get("landing_url"))
+    acquirable = acquisition_target and not record.get("metadata_only")
+
     if sha_valid is False:
         return _decision(AUTO_REJECT, "sha256_mismatch", "restore or reacquire the intact source")
     if status in HARD_REJECT_CLASSIFICATIONS or relevance == "IRRELEVANT":
         return _decision(AUTO_REJECT, "explicit_irrelevant_or_noncontent", "retain provenance in rejected manifest")
     if acquisition in HARD_REJECT_ACQUISITION:
+        # A hard acquisition/security failure ends retries. Keep a high-value
+        # reference instead of discarding it; otherwise reject with provenance.
+        if not exists and metadata_reference:
+            return _decision(METADATA_REFERENCE, "acquisition_failed_reference_retained", "treat as REFERENCE_ONLY; do not retry automatically")
         return _decision(AUTO_REJECT, "hard_acquisition_or_security_failure", "retain failure details; do not retry automatically")
     if relevance in {"", "WEAK"}:
         if record.get("rule_embedding_disagreement") or record.get("relevance_conflict"):
             return _decision(RECLASSIFY, "relevance_classifier_conflict", "recompute deterministic relevance and taxonomy mapping")
         return _decision(AUTO_REJECT, "insufficient_tunnel_relevance", "retain metadata in rejected manifest")
     if not exists:
-        if is_metadata_reference(record):
+        # Try to actually acquire the source before falling back to a reference:
+        # an official source with a real URL should be reacquired, not filed as
+        # metadata. METADATA_REFERENCE is the fallback for records with nothing
+        # to acquire (bibliographic / metadata-only) or after retries are spent.
+        if relevance in {"STRONG", "PROBABLE"} and acquirable:
+            return _decision(RETRY_ACQUISITION, "source_missing", "retry bounded acquisition or official-page snapshot")
+        if metadata_reference:
             return _decision(
                 METADATA_REFERENCE, "reference_metadata_without_ingestable_content",
                 "retain as REFERENCE_ONLY or as an acquisition-retry lead; not a handoff source",
@@ -99,8 +113,6 @@ def route(record: dict[str, Any], *, source_exists: bool | None = None, sha_vali
         if relevance in {"STRONG", "PROBABLE"}:
             return _decision(RETRY_ACQUISITION, "source_missing", "retry bounded acquisition or official-page snapshot")
         return _decision(AUTO_REJECT, "source_missing_and_not_relevant", "retain metadata in rejected manifest")
-    if acquisition in RETRYABLE_ACQUISITION and not exists:
-        return _decision(RETRY_ACQUISITION, acquisition.lower(), "retry with provider backoff and content validation")
     if not record.get("primary_section"):
         return _decision(RECLASSIFY, "primary_section_missing", "rerun rules and embedding classification")
     if record.get("rule_embedding_disagreement") and status != "LLM_ACCEPTED":

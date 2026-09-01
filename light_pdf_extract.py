@@ -139,11 +139,10 @@ def enrich_catalog(output_dir: str | Path | None = None, *, max_pages: int = 3) 
                 "semantic_boundary": "Light PDF text is provisional classification input and is not full-text evidence.",
             }
             if extraction["light_text"]:
-                # Provisional classification input only. The real abstract, if any,
-                # is preserved; light text just fills the gap for the classifier.
+                # Provisional classification input only. It is stored in its own
+                # field and never written into `abstract`: an abstract is a
+                # publisher-supplied summary, light PDF text is not.
                 row["light_pdf_text"] = extraction["light_text"]
-                # Records reaching this branch have no abstract (checked above).
-                row["abstract"] = extraction["light_text"]
                 row["classification_input"] = "LIGHT_PDF_FIRST_PAGES"
                 row["light_pdf_text_extracted"] = True
                 row["crawler_evidence_level"] = "LIGHT_PDF_TEXT"

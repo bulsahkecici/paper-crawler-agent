@@ -2,18 +2,33 @@
 
 **Scope:** Boundary hardening & TunnelBookAI handoff contract finalization.
 **Date:** 2026-09-01
-**Branch:** `hardening` (working tree; no commit/tag created)
-**Base commit:** `08416d8`
-**VERSION:** `1.0.0-rc1` → `1.0.0` (recommended, see below)
+**Branch:** `hardening` → merged to `master`
+**VERSION:** `1.0.0-rc1` → `1.0.0`
 
 ---
 
 ## Decision: **GO**
 
-All boundary checks pass, the full offline test suite is green (113/113), and a
+All boundary checks pass, the full offline test suite is green (116/116), and a
 controlled two-record offline smoke test through stages 3–7 plus the quality gate
 returns `GO`. No production crawl and no destructive corpus operation were
 performed.
+
+### Post-review fixes applied
+
+1. **light_pdf_text ↔ abstract separation.** Light PDF text is no longer written
+   into the `abstract` field at any stage. `light_pdf_extract.py` stores it only
+   in `light_pdf_text`; `classify_catalog.py` feeds the classifier a separate
+   `classification_text` (real abstract → light PDF text → web excerpt) and
+   persists `abstract` (real only), `light_pdf_text`, and `classification_text`
+   as distinct fields. `handoff_export.py` relevance recheck uses the same
+   fallback chain.
+2. **Acquisition-first ordering for official sources.** `decision_router.route`
+   now attempts `RETRY_ACQUISITION` for any relevant record with a real
+   acquisition target (incl. official pages) *before* the `METADATA_REFERENCE`
+   fallback. `METADATA_REFERENCE` applies to records with nothing to acquire
+   (`metadata_only`, ISBN-only) or after a hard acquisition failure — in which
+   case a high-value reference is retained rather than `AUTO_REJECT`ed.
 
 ---
 
@@ -65,7 +80,7 @@ performed.
 
 ```
 python -m unittest discover -s tests -p 'test_*.py' -v
-Ran 113 tests — OK
+Ran 116 tests — OK
 ```
 
 New coverage: `tests/test_boundary_hardening.py` (evidence semantics, legacy
@@ -106,3 +121,15 @@ None.
   Markdown normalization step exists); the field is contractually reserved.
 - Deprecated `corpus_quality_gate.py` shim and `audit/corpus_quality_gate.json`
   alias can be removed once no external consumer reads them.
+- `decision_router` has no persistent retry counter; `RETRY_ACQUISITION` relies
+  on the bounded `--retry-acquisition-only` mode and hard-failure statuses to
+  terminate. A per-record attempt count would let officials fall back to
+  `METADATA_REFERENCE` automatically after N soft failures.
+
+---
+
+## Freeze
+
+On `master` CI PASS, PaperCrawler **v1.0.0 is frozen**. Subsequent changes go
+through a new branch and a version bump; the handoff contract (`schema_version
+2.0`) is stable for TunnelBookAI to build against.

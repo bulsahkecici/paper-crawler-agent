@@ -155,7 +155,9 @@ def export_handoff(
         row["evidence_level"] = row["crawler_evidence_level"]  # migration alias
         row["source_tier"] = str(row.get("source_tier") or corpus_policy.source_tier(row))
         row["normalized_document_type"] = str(row.get("normalized_document_type") or corpus_policy.normalized_document_type(row))
-        recheck = relevance.evaluate(row, text_override=str(row.get("abstract") or ""))
+        recheck = relevance.evaluate(row, text_override=str(
+            row.get("abstract") or row.get("classification_text") or row.get("light_pdf_text") or ""
+        ))
         row = {**row, **recheck}
         source_value = row.get("source_path")
         source_path = Path(str(source_value)).expanduser() if source_value else None
