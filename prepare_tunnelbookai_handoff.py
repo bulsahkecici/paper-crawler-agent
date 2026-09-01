@@ -16,7 +16,7 @@ import source_dedup_audit
 import supplemental_discovery
 import run_summary
 import run_manifest
-import corpus_quality_gate
+import handoff_quality_gate
 import pipeline_state
 import tunnel_harvest as harvest
 
@@ -208,7 +208,8 @@ def main() -> None:
     handoff = state.run("handoff", lambda: handoff_export.export_handoff(args.output_dir, destination=args.destination)) or _read_json(root / "exports" / "TunnelBookAI_Source_Pack" / "99_audit" / "handoff_audit.json")
     _log("run summary started")
     summary = run_summary.write(args.output_dir)
-    quality_gate = corpus_quality_gate.evaluate(root, package_root=args.destination)
+    _log("handoff quality gate started")
+    quality_gate = handoff_quality_gate.evaluate_handoff(root, package_root=args.destination)
     run_manifest.finish(manifest_context, root, summary=summary, decision=quality_gate)
     report = {
         "discovery": discovery_report,
@@ -232,9 +233,28 @@ def main() -> None:
         },
         "handoff": handoff,
         "run_summary": summary,
-        "corpus_quality_gate": quality_gate,
+        "handoff_quality_gate": quality_gate,
     }
     _log("pipeline finished")
+    hq = handoff or {}
+    print("\n".join([
+        "",
+        "PAPERCRAWLER RUN COMPLETE",
+        "=========================",
+        "",
+        f"Discovery: queries={summary.get('discovery', {}).get('queries', 0)} discovered={summary.get('discovery', {}).get('discovered', 0)}",
+        f"Acquired originals: {sum(int(v) for k, v in (summary.get('acquisition') or {}).items() if 'DOWNLOAD' in str(k) or 'SNAPSHOT' in str(k))}",
+        f"Provisional classifications: {(final_classification or {}).get('documents', 0)}",
+        "",
+        f"READY_FOR_HANDOFF:   {hq.get('ready_for_handoff', 0)}",
+        f"METADATA_REFERENCE:  {hq.get('metadata_references', 0)}",
+        f"MANUAL_REVIEW:       {hq.get('manual_review', 0)}",
+        f"RETRY_ACQUISITION:   {hq.get('retry_acquisition', 0)}",
+        f"AUTO_REJECT:         {hq.get('rejected', 0)}",
+        "",
+        f"Handoff quality gate: {quality_gate.get('decision', 'NO_GO')}",
+        "",
+    ]), flush=True)
     print(json.dumps(report, ensure_ascii=False, indent=2), flush=True)
 
 

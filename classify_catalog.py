@@ -261,7 +261,8 @@ def classify_catalog(
             "handoff_candidate": handoff_candidate,
             **result,
         }
-        payload["evidence_level"] = corpus_policy.evidence_level({**record, **payload})
+        payload["crawler_evidence_level"] = corpus_policy.crawler_evidence_level({**record, **payload})
+        payload["evidence_level"] = payload["crawler_evidence_level"]  # migration alias
         payload["source_tier"] = corpus_policy.source_tier(payload)
         payload["normalized_document_type"] = corpus_policy.normalized_document_type(payload)
         handoff_status, handoff_reason = corpus_policy.handoff_decision(payload)

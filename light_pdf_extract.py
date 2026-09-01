@@ -93,8 +93,19 @@ def enrich_catalog(output_dir: str | Path | None = None, *, max_pages: int = 3) 
     errors: list[dict[str, str]] = []
     metrics = {key: 0 for key in (
         "total_candidates", "pdf_candidates", "downloaded_pdfs", "valid_pdfs", "corrupt_pdfs",
-        "extracted_full_text", "abstract_only", "webpage_text", "title_only", "extraction_errors", "no_text",
+        "light_pdf_text_extracted", "abstract_only", "webpage_text", "title_only", "extraction_errors", "no_text",
     )}
+    # Accept the old metric name from a previously written audit file, but never
+    # produce it as authoritative again.
+    legacy_metric: int | None = None
+    legacy_audit = root / "audit" / "light_pdf_extract_audit.json"
+    if legacy_audit.exists():
+        try:
+            prior = json.loads(legacy_audit.read_text(encoding="utf-8"))
+            if isinstance(prior, dict) and "extracted_full_text" in prior:
+                legacy_metric = int(prior.get("extracted_full_text") or 0)
+        except (OSError, ValueError):
+            legacy_metric = None
 
     for catalog_path in paths:
         rows = _read_jsonl(catalog_path)
@@ -125,17 +136,25 @@ def enrich_catalog(output_dir: str | Path | None = None, *, max_pages: int = 3) 
                 "pages_read": extraction["pages_read"],
                 "text_layer_available": extraction["text_layer_available"],
                 "extraction_error": extraction["extraction_error"],
+                "semantic_boundary": "Light PDF text is provisional classification input and is not full-text evidence.",
             }
             if extraction["light_text"]:
+                # Provisional classification input only. The real abstract, if any,
+                # is preserved; light text just fills the gap for the classifier.
+                row["light_pdf_text"] = extraction["light_text"]
+                # Records reaching this branch have no abstract (checked above).
                 row["abstract"] = extraction["light_text"]
                 row["classification_input"] = "LIGHT_PDF_FIRST_PAGES"
+                row["light_pdf_text_extracted"] = True
+                row["crawler_evidence_level"] = "LIGHT_PDF_TEXT"
                 enriched += 1
-                metrics["extracted_full_text"] += 1
+                metrics["light_pdf_text_extracted"] += 1
                 metrics["valid_pdfs"] += 1
                 changed = True
             else:
                 row["classification_input"] = "TITLE_METADATA_ONLY"
-                row["needs_tunnelbookai_fulltext_review"] = True
+                row["crawler_evidence_level"] = "TITLE_METADATA_ONLY"
+                row["needs_tunnelbookai_fulltext_conversion"] = True
                 no_text_layer += 1
                 metrics["no_text"] += 1
                 changed = True
@@ -150,14 +169,18 @@ def enrich_catalog(output_dir: str | Path | None = None, *, max_pages: int = 3) 
             _write_jsonl(catalog_path, rows)
 
     report = {
-        "schema_version": "1.0",
+        "schema_version": "1.1",
         "enriched": enriched,
         "no_text_layer": no_text_layer,
         "skipped_with_abstract": skipped_with_abstract,
         "errors": errors,
         **metrics,
-        "semantic_boundary": "Light extraction is provisional classification input only; TunnelBookAI still runs full Docling conversion.",
+        "crawler_evidence_level": "LIGHT_PDF_TEXT",
+        "semantic_boundary": "Light PDF text is provisional classification input and is not full-text evidence.",
+        "semantic_boundary_detail": "PaperCrawler reads only the first pages for provisional classification; TunnelBookAI still runs full Docling conversion, OCR/vision and table extraction.",
     }
+    if legacy_metric is not None:
+        report["legacy_extracted_full_text_metric"] = legacy_metric
     audit = root / "audit"
     audit.mkdir(parents=True, exist_ok=True)
     (audit / "light_pdf_extract_audit.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")

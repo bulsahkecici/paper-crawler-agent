@@ -17,6 +17,9 @@ RETRY_ACQUISITION = "RETRY_ACQUISITION"
 RECLASSIFY = "RECLASSIFY"
 AUTO_REJECT = "AUTO_REJECT"
 MANUAL_REVIEW = "MANUAL_REVIEW"
+METADATA_REFERENCE = "METADATA_REFERENCE"
+
+OFFICIAL_SOURCE_CLASSES = {"TR_OFFICIAL", "INT_OFFICIAL", "STANDARD_BODY"}
 
 ACCEPTED_CLASSIFICATIONS = {"AUTO_ACCEPT", "ACCEPT_WITH_AUDIT", "LLM_ACCEPTED"}
 REVIEW_CLASSIFICATIONS = {"NEEDS_REVIEW", "LOCAL_LLM_REVIEW"}
@@ -43,9 +46,29 @@ def _metadata_only_official_exception(record: dict[str, Any]) -> bool:
     """Require an explicit, auditable exception instead of silently weakening the gate."""
     return bool(
         record.get("metadata_only_handoff_exception")
-        and str(record.get("source_class") or "").upper() in {"TR_OFFICIAL", "INT_OFFICIAL", "STANDARD_BODY"}
+        and str(record.get("source_class") or "").upper() in OFFICIAL_SOURCE_CLASSES
         and (record.get("source_url") or record.get("landing_url"))
     )
+
+
+def _stable_identifier(record: dict[str, Any]) -> bool:
+    extra = record.get("extra") if isinstance(record.get("extra"), dict) else {}
+    isbn = record.get("isbn") or extra.get("isbn")
+    return bool(record.get("doi") or isbn or record.get("source_url") or record.get("landing_url"))
+
+
+def is_metadata_reference(record: dict[str, Any]) -> bool:
+    """A high-value reference with no ingestable source content.
+
+    Kept out of READY_FOR_HANDOFF: it carries no SHA256 and no file for
+    TunnelBookAI to convert. TunnelBookAI may treat it as REFERENCE_ONLY or as
+    an acquisition-retry lead.
+    """
+    if not (str(record.get("title") or "").strip() and _stable_identifier(record)):
+        return False
+    official = str(record.get("source_class") or "").upper() in OFFICIAL_SOURCE_CLASSES
+    bibliographic = bool(record.get("metadata_only") or record.get("metadata_only_handoff_exception"))
+    return official or bibliographic
 
 
 def route(record: dict[str, Any], *, source_exists: bool | None = None, sha_valid: bool | None = None) -> dict[str, Any]:
@@ -67,11 +90,16 @@ def route(record: dict[str, Any], *, source_exists: bool | None = None, sha_vali
         if record.get("rule_embedding_disagreement") or record.get("relevance_conflict"):
             return _decision(RECLASSIFY, "relevance_classifier_conflict", "recompute deterministic relevance and taxonomy mapping")
         return _decision(AUTO_REJECT, "insufficient_tunnel_relevance", "retain metadata in rejected manifest")
-    if not exists and not _metadata_only_official_exception(record):
+    if not exists:
+        if is_metadata_reference(record):
+            return _decision(
+                METADATA_REFERENCE, "reference_metadata_without_ingestable_content",
+                "retain as REFERENCE_ONLY or as an acquisition-retry lead; not a handoff source",
+            )
         if relevance in {"STRONG", "PROBABLE"}:
             return _decision(RETRY_ACQUISITION, "source_missing", "retry bounded acquisition or official-page snapshot")
         return _decision(AUTO_REJECT, "source_missing_and_not_relevant", "retain metadata in rejected manifest")
-    if acquisition in RETRYABLE_ACQUISITION and not exists and not _metadata_only_official_exception(record):
+    if acquisition in RETRYABLE_ACQUISITION and not exists:
         return _decision(RETRY_ACQUISITION, acquisition.lower(), "retry with provider backoff and content validation")
     if not record.get("primary_section"):
         return _decision(RECLASSIFY, "primary_section_missing", "rerun rules and embedding classification")
