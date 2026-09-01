@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Hybrid TunnelBookAI section classification using rules + local embeddings + local Qwen review.
+"""Hybrid TunnelBookAI section classification using rules + local embeddings + local LLM review.
 
 Security boundary:
 - Only loopback OpenAI-compatible servers are accepted.
@@ -88,20 +88,26 @@ class LocalOpenAIClient:
         return [float(x) for x in data[0]["embedding"]]
 
     def chat_json(self, model: str, system: str, user: str) -> dict[str, Any]:
+        payload = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            "temperature": 0.0,
+            "response_format": {"type": "json_object"},
+        }
         response = requests.post(
-            self.base_url + "/chat/completions",
-            headers=self.headers,
-            json={
-                "model": model,
-                "messages": [
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": user},
-                ],
-                "temperature": 0.0,
-                "response_format": {"type": "json_object"},
-            },
-            timeout=self.timeout,
+            self.base_url + "/chat/completions", headers=self.headers, json=payload, timeout=self.timeout
         )
+        # Some otherwise OpenAI-compatible local servers do not implement JSON
+        # mode. The system instruction still requires JSON, so retry safely.
+        if response.status_code == 400:
+            response.close()
+            payload.pop("response_format", None)
+            response = requests.post(
+                self.base_url + "/chat/completions", headers=self.headers, json=payload, timeout=self.timeout
+            )
         response.raise_for_status()
         choices = response.json().get("choices") or []
         if not choices:
@@ -130,39 +136,62 @@ def _probe_role(
     preferred_terms: list[str],
     *,
     embedding: bool,
+    requested_model: str | None = None,
+    timeout: float = 20.0,
 ) -> tuple[LocalOpenAIClient | None, str | None]:
     for server in servers:
         if not is_loopback_url(server):
             continue
-        client = LocalOpenAIClient(server)
+        client = LocalOpenAIClient(server, timeout=timeout)
         try:
             models = client.models()
         except (requests.RequestException, ValueError, OSError):
             continue
-        model = _pick_model(models, preferred_terms, embedding=embedding)
+        model = _pick_model(models, [requested_model, *preferred_terms] if requested_model else preferred_terms, embedding=embedding)
         if model:
             return client, model
     return None, None
 
 
-def detect_local_clients() -> tuple[LocalOpenAIClient | None, str | None, LocalOpenAIClient | None, str | None]:
-    """Discover embedding and chat models independently across loopback endpoints."""
+def detect_local_clients(
+    *,
+    embedding_servers: list[str] | None = None,
+    embedding_model: str | None = None,
+    llm_servers: list[str] | None = None,
+    llm_model: str | None = None,
+) -> tuple[LocalOpenAIClient | None, str | None, LocalOpenAIClient | None, str | None]:
+    """Discover local OpenAI-compatible embedding and chat models independently.
+
+    The caller may select any loopback-compatible provider/model (LM Studio,
+    Ollama, vLLM, llama.cpp, etc.); no provider-specific API is required.
+    """
     cfg = _load_yaml("classification_policy.yaml")
     emb_cfg = cfg.get("embedding") or {}
     llm_cfg = cfg.get("llm_review") or {}
-    emb_servers = [str(x) for x in (emb_cfg.get("local_servers") or [])]
-    llm_servers = [str(x) for x in (llm_cfg.get("local_servers") or emb_servers)]
+    emb_servers = embedding_servers or [str(x) for x in (emb_cfg.get("local_servers") or [])]
+    llm_servers = llm_servers or [str(x) for x in (llm_cfg.get("local_servers") or emb_servers)]
     emb_client, emb_model = _probe_role(
         emb_servers,
         list(emb_cfg.get("preferred_model_terms") or []),
-        embedding=True,
+        embedding=True, requested_model=embedding_model,
+        timeout=float(emb_cfg.get("request_timeout_seconds") or 20),
     )
     llm_client, llm_model = _probe_role(
         llm_servers,
         list(llm_cfg.get("preferred_model_terms") or []),
-        embedding=False,
+        embedding=False, requested_model=llm_model,
+        timeout=float(llm_cfg.get("request_timeout_seconds") or 90),
     )
     return emb_client, emb_model, llm_client, llm_model
+
+
+def detect_local_embedding(server: str | None = None, model: str | None = None) -> tuple[LocalOpenAIClient | None, str | None]:
+    cfg = _load_yaml("classification_policy.yaml").get("embedding") or {}
+    servers = [server] if server else [str(x) for x in (cfg.get("local_servers") or [])]
+    return _probe_role(
+        servers, list(cfg.get("preferred_model_terms") or []), embedding=True,
+        requested_model=model, timeout=float(cfg.get("request_timeout_seconds") or 20),
+    )
 
 
 def _cosine(a: list[float], b: list[float]) -> float:
@@ -320,6 +349,17 @@ def classify_hybrid(
 ) -> dict[str, Any]:
     result = base.classify_record(record)
     payload = result.as_dict()
+    if str(record.get("relevance_status") or "").upper() == "IRRELEVANT":
+        payload.update({
+            "primary_section": None,
+            "book_sections": [],
+            "classification_confidence": 1.0,
+            "classification_status": "REJECT_IRRELEVANT",
+        })
+        payload["embedding_review"] = {"enabled": False, "model": None, "sections": [], "error": None}
+        payload["llm_review"] = {"enabled": False, "model": None, "used": False, "reason": "irrelevant_gate"}
+        payload["rule_embedding_disagreement"] = False
+        return payload
     rule_sections = list(payload.get("book_sections") or [])
     embedding_sections: list[dict[str, Any]] = []
     embedding_error: str | None = None
@@ -331,6 +371,7 @@ def classify_hybrid(
             )
         except (requests.RequestException, ValueError, OSError) as exc:
             embedding_error = str(exc)
+            print(f"[local-ai] embedding skipped: {embedding_error}", flush=True)
 
     if embedding_sections:
         fused, disagreement = _fuse(rule_sections, embedding_sections)
@@ -353,11 +394,38 @@ def classify_hybrid(
     payload["rule_embedding_disagreement"] = disagreement
 
     llm_cfg = _load_yaml("classification_policy.yaml").get("llm_review") or {}
-    triggers = set(llm_cfg.get("trigger_statuses") or [])
-    should_review = payload["classification_status"] in triggers or (
-        disagreement and bool(llm_cfg.get("trigger_on_rule_embedding_disagreement", True))
+    top_score = float((fused or [{}])[0].get("score") or 0.0)
+    margin = top_score - float((fused or [{}, {}])[1].get("score") or 0.0) if len(fused) > 1 else top_score
+    ambiguity_low = float(llm_cfg.get("ambiguity_score_low") or 0.52)
+    ambiguity_high = float(llm_cfg.get("ambiguity_score_high") or 0.74)
+    ambiguity_margin = float(llm_cfg.get("ambiguity_margin") or 0.08)
+    probable_high_value = (
+        str(record.get("relevance_status") or "") == "PROBABLE"
+        and str(payload.get("authority_tier") or "") in {"A1", "A2", "A3", "B1"}
     )
-    payload["llm_review"] = {"enabled": bool(llm_client and llm_model), "model": llm_model, "used": False}
+    strong_agreement = (
+        str(record.get("relevance_status") or "") == "STRONG"
+        and not disagreement
+        and bool(rule_sections)
+        and top_score >= ambiguity_high
+        and str(payload.get("document_type") or "UNKNOWN") != "UNKNOWN"
+    )
+    trigger_reasons: list[str] = []
+    if disagreement and bool(llm_cfg.get("trigger_on_rule_embedding_disagreement", True)):
+        trigger_reasons.append("rule_embedding_disagreement")
+    if not strong_agreement and ambiguity_low <= top_score < ambiguity_high:
+        trigger_reasons.append("confidence_ambiguity_band")
+    if not strong_agreement and len(fused) > 1 and margin <= ambiguity_margin:
+        trigger_reasons.append("top_section_margin_too_close")
+    if str(payload.get("document_type") or "UNKNOWN") == "UNKNOWN" and str(record.get("relevance_status") or "") != "IRRELEVANT":
+        trigger_reasons.append("document_type_unresolved")
+    if probable_high_value:
+        trigger_reasons.append("probable_high_value_source")
+    should_review = bool(trigger_reasons)
+    payload["llm_review"] = {
+        "enabled": bool(llm_client and llm_model), "model": llm_model,
+        "used": False, "triggered": should_review, "trigger_reasons": trigger_reasons,
+    }
     if should_review and llm_client and llm_model:
         candidates = fused or embedding_sections or rule_sections
         try:
@@ -374,10 +442,11 @@ def classify_hybrid(
                     payload["classification_status"] = "NEEDS_REVIEW"
         except (requests.RequestException, ValueError, OSError, json.JSONDecodeError) as exc:
             payload["llm_review"]["error"] = str(exc)
+            print(f"[local-ai] LLM review skipped: {exc}", flush=True)
 
     payload["methods"] = {
         **(payload.get("methods") or {}),
         "section_fusion": "taxonomy_rules_plus_local_embeddings" if embedding_sections else "taxonomy_rules_only",
-        "llm_review": "local_qwen_candidate_section_review" if payload["llm_review"].get("used") else "not_used",
+        "llm_review": "local_openai_compatible_candidate_section_review" if payload["llm_review"].get("used") else "not_used",
     }
     return payload

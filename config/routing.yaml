@@ -37,7 +37,22 @@ routes:
 
   - match:
       source_class: INT_OFFICIAL
-    path: "A_OFFICIAL/INTERNATIONAL"
+      publisher_code: PIARC
+    path: "A_OFFICIAL/INTERNATIONAL/PIARC"
+
+  - match:
+      source_class: INT_OFFICIAL
+      publisher_code: FHWA
+    path: "A_OFFICIAL/INTERNATIONAL/FHWA"
+
+  - match:
+      source_class: PROFESSIONAL_ORGANIZATION
+      publisher_code: ITA_AITES
+    path: "A_OFFICIAL/INTERNATIONAL/ITA_AITES"
+
+  - match:
+      source_class: INT_OFFICIAL
+    path: "A_OFFICIAL/INTERNATIONAL/OTHER"
 
   - match:
       source_class: STANDARD_BODY

@@ -1,4 +1,4 @@
-# Paper Crawler Agent
+# PaperCrawler v1.0.0-rc1
 
 TunnelBookAI için **kaynak keşfi → indirme/snapshot → sınıflandırma → coverage audit → gap search → handoff** hazırlayan ayrı bir staging projesidir.
 
@@ -40,9 +40,14 @@ discovery_catalog.jsonl
    ↓
 Rules + local embedding
    ↓
-Ambiguous? → local Qwen reviewer
+Only explicitly ambiguous? → local Qwen reviewer
    ↓
-classification audit
+deterministic decision router
+   ├─ AUTO_HANDOFF
+   ├─ RETRY_ACQUISITION
+   ├─ RECLASSIFY
+   ├─ AUTO_REJECT
+   └─ MANUAL_REVIEW
    ↓
 Coverage target met?
    ├─ yes → handoff
@@ -60,6 +65,31 @@ pip install -r requirements.txt
 ```
 
 Yerel AI kullanmak istenirse LM Studio / Ollama / vLLM yalnızca loopback (`127.0.0.1`, `localhost`, `::1`) üzerinde OpenAI-compatible endpoint sağlamalıdır. Cloud fallback yoktur.
+
+Yerel LLM sağlayıcısı Qwen'e bağlı değildir. Varsayılan modeller otomatik bulunur;
+isterseniz sunucu ve modeli açıkça seçebilirsiniz:
+
+```bash
+python prepare_tunnelbookai_handoff.py \
+  --llm-server http://127.0.0.1:1234/v1 \
+  --llm-model qwen3.6-35b-a3b-mlx \
+  --embedding-server http://127.0.0.1:1234/v1 \
+  --embedding-model text-embedding-nomic-embed-text-v1.5
+```
+
+Pipeline aşamaları, sorgular, kaynak sonuçları, zaman aşımı/atlama kararları,
+acquisition, sınıflandırma, coverage-gap ve handoff durumu terminale anlık yazılır.
+
+Pipeline varsayılan olarak `audit/pipeline_state.json` üzerinden güvenli biçimde
+devam eder. Tamamlanmış aşamalar yeniden çalıştırılmaz:
+
+```bash
+python prepare_tunnelbookai_handoff.py --output-dir tunel_makaleleri --resume
+```
+
+Yeni bir checkpoint başlatmak (mevcut PDF ve kullanıcı verilerini silmeden) için
+`--fresh-run` kullanılabilir. Final handoff yalnız `corpus_quality_gate.json`
+kararı ve `00_registry/handoff_manifest.jsonl` üzerinden tüketilmelidir.
 
 ## 2. Ücretsiz kaynak keşfi
 
@@ -127,7 +157,15 @@ Sınıflandırma eksenleri:
 - `classification_status`
 - `handoff_candidate`
 
-`section_coverage` bütün keşif kayıtlarını gösterir. `handoff_candidate_section_coverage` ise gerçekten indirilmiş/snapshot alınmış ve TunnelBookAI handoff'ına aday olabilecek kaynakları sayar. Gap search ikinci metriği kullanır; metadata-only URL'ler coverage'ı yapay olarak dolduramaz.
+Coverage beş ayrı düzeyi raporlar: `raw_matches`, `relevant_matches`,
+`acquired_matches`, `handoff_candidates` ve `authority_weighted_score`. Gap search
+`handoff_candidates` değerini kullanır; TunnelBookAI final evidence kararı coverage'ı
+etkilemez ve metadata-only URL'ler coverage'ı yapay olarak dolduramaz.
+
+Qwen varsayılan sınıflandırıcı değildir. Yalnızca rule/embedding anlaşmazlığı,
+yakın top-1/top-2 skorları, güven ambiguity bandı, çözülemeyen belge türü veya
+yüksek değerli `PROBABLE` kaynak arbitrajında çağrılır. Her çağrı
+`llm_review.trigger_reasons` ile açıklanır.
 
 ## 5. Coverage-gap ikinci turu
 
@@ -161,17 +199,34 @@ tunel_makaleleri/exports/TunnelBookAI_Source_Pack/
 │   ├── D_REPORTS_BOOKS/
 │   └── E_NEWS_CASES/
 └── 99_audit/
-    └── handoff_audit.json
+    ├── handoff_audit.json
+    ├── decision_summary.json
+    ├── review_queue.jsonl
+    ├── retry_acquisition.jsonl
+    ├── reclassify_queue.jsonl
+    └── rejected_manifest.jsonl
 ```
 
 Web kaynaklarında normalize edilmiş `source.md` ana handoff kaynağıdır; mevcutsa ham `source_raw.html` da ek asset olarak pakete alınır ve SHA256 listesine yazılır. DOI, publisher, source URL, discovery source/query gibi provenance alanları handoff metadata'sında korunur.
+
+İnsanlar yalnız `audit/review_queue.csv` dosyasını inceler. Eksik kaynaklar
+`retry_acquisition.csv`, açık sınıflandırma çelişkileri `reclassify_queue.csv`,
+deterministik retler `rejected_manifest.csv` içindedir. `source_missing` doğrudan
+insan kuyruğuna gitmez. `insufficient_evidence_level` PaperCrawler ret nedeni
+değildir; exported metadata `final_evidence_status: NOT_EVALUATED` taşır.
 
 ## Tek komut
 
 Tam pipeline:
 
 ```bash
-python prepare_tunnelbookai_handoff.py
+python prepare_tunnelbookai_handoff.py \
+  --output-dir tunel_makaleleri \
+  --resume \
+  --embedding-server http://127.0.0.1:1234/v1 \
+  --embedding-model text-embedding-nomic-embed-text-v1.5 \
+  --llm-server http://127.0.0.1:1234/v1 \
+  --llm-model qwen3.6-35b-a3b-mlx
 ```
 
 Bu komut sırasıyla:
@@ -196,6 +251,25 @@ Gap pass istemiyorsanız:
 ```bash
 python prepare_tunnelbookai_handoff.py --skip-gap-pass
 ```
+
+Sınırlı üretim modları:
+
+```bash
+python prepare_tunnelbookai_handoff.py --output-dir tunel_makaleleri --classify-only
+python prepare_tunnelbookai_handoff.py --output-dir tunel_makaleleri --handoff-only
+python prepare_tunnelbookai_handoff.py --output-dir tunel_makaleleri --review-export-only
+python prepare_tunnelbookai_handoff.py --output-dir tunel_makaleleri --retry-acquisition-only
+python prepare_tunnelbookai_handoff.py --output-dir tunel_makaleleri --gap-only
+python prepare_tunnelbookai_handoff.py --output-dir tunel_makaleleri --rules-only
+python prepare_tunnelbookai_handoff.py --output-dir tunel_makaleleri --dry-run
+```
+
+Her full run `audit/runs/RUN_YYYYMMDD_HHMMSS/` altında config hash'leri, git
+commit/branch, yerel model seçimi, provider health, coverage, dedup, decision ve
+run summary kayıtlarını tutar. `--resume` kaynakları silmez; tamamlanmış checkpoint
+aşamalarını atlar. Classification semantic'i değiştiğinde `--classify-only`
+affected sidecar ve current index'i deterministik olarak yeniler; fiziksel sidecar
+sayısı current-record sayısı olarak raporlanmaz.
 
 ## Dedup kimliği
 
@@ -232,11 +306,13 @@ Bu sıra konuya göre `source_policy.yaml` ile override edilebilir.
 - PDF stream edilir, boyut sınırı uygulanır ve SHA256 indirme sırasında hesaplanır.
 - Common Crawl genel arama motoru gibi kullanılmaz; yalnızca önceden güvenilir bulunan domain içinde URL genişletme yapar.
 - `READY_FOR_HANDOFF`, **kitapta kanıt olarak onaylandı** anlamına gelmez.
+- Ücretli API veya cloud LLM fallback yoktur; opsiyonel local model endpoint'leri
+  loopback dışına çıkamaz.
 
 ## Test
 
 ```bash
-python -m unittest discover -s tests -p 'test_*.py' -v
+.venv/bin/python -m unittest discover -s tests -p 'test_*.py' -v
 ```
 
 GitHub Actions Python 3.11 ve 3.12 için aynı test paketini çalıştıracak şekilde tanımlanmıştır.

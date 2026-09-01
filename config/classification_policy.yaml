@@ -12,6 +12,7 @@ embedding:
     - "embed"
   top_k: 5
   min_similarity: 0.30
+  request_timeout_seconds: 20
 
 fusion:
   rule_weight: 0.55
@@ -23,11 +24,17 @@ fusion:
   disagreement_margin: 0.10
 
 llm_review:
+  # Any local OpenAI-compatible chat model can be used. Qwen is only the
+  # preferred default; CLI --llm-server/--llm-model overrides this list.
   enabled: true
+  request_timeout_seconds: 90
   trigger_statuses:
     - LOCAL_LLM_REVIEW
     - NEEDS_REVIEW
   trigger_on_rule_embedding_disagreement: true
+  ambiguity_score_low: 0.58
+  ambiguity_score_high: 0.74
+  ambiguity_margin: 0.08
   max_candidate_sections: 8
   max_selected_sections: 5
   min_accept_confidence: 0.72
@@ -46,6 +53,22 @@ handoff:
     - AUTO_ACCEPT
     - ACCEPT_WITH_AUDIT
     - LLM_ACCEPTED
+  review_classification_statuses:
+    - NEEDS_REVIEW
+    - LOCAL_LLM_REVIEW
+  rejected_classification_statuses:
+    - REJECT_IRRELEVANT
+    - REJECT_NONCONTENT_PAGE
+    - REJECT_NAVIGATION
+    - REJECT_LEGAL_PAGE
+    - DOWNLOAD_INVALID
+    - DUPLICATE
+  allowed_evidence_levels:
+    - FULL_TEXT
+    - PDF_EXTRACT
+    - ABSTRACT
+    - WEBPAGE_TEXT
+  min_classification_confidence: 0.72
   require_primary_section: true
   require_existing_source: true
   require_sha256: true

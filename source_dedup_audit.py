@@ -4,18 +4,24 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import difflib
 import json
 import re
 from collections import defaultdict
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import yaml
 
 import tunnel_harvest as harvest
 
 ROOT = Path(__file__).resolve().parent
+
+
+def _log(message: str) -> None:
+    print(f"[dedup] {message}", flush=True)
 
 
 def _load_policy() -> dict[str, Any]:
@@ -58,6 +64,19 @@ def _work_key(row: dict[str, Any]) -> str:
     return "tay:" + "|".join([_norm_title(row.get("title")), _author_key(row), str(row.get("year") or "")])
 
 
+def _canonical_url(row: dict[str, Any]) -> str | None:
+    for field in ("source_url", "landing_url", "pdf_url"):
+        value = str(row.get(field) or "").strip()
+        if not value:
+            continue
+        parsed = urlsplit(value)
+        if not parsed.scheme or not parsed.netloc:
+            continue
+        query = [(k, v) for k, v in parse_qsl(parsed.query, keep_blank_values=True) if not k.lower().startswith("utm_")]
+        return urlunsplit((parsed.scheme.lower(), parsed.netloc.lower(), parsed.path.rstrip("/"), urlencode(query), ""))
+    return None
+
+
 def _quality(row: dict[str, Any]) -> tuple[int, int, int, int]:
     return (
         1 if row.get("source_sha256") else 0,
@@ -72,12 +91,14 @@ def audit(output_dir: str | Path | None = None) -> dict[str, Any]:
         harvest.set_output_dir(output_dir)
     root = harvest.OUTPUT_DIR
     rows = _read_jsonl(root / "classification_index.jsonl")
+    _log(f"auditing documents={len(rows)}")
     policy = _load_policy()
     threshold = float(((policy.get("same_work_rules") or {}).get("title_author_year_similarity_threshold") or 0.94))
 
     sha_groups: defaultdict[str, list[int]] = defaultdict(list)
     doi_groups: defaultdict[str, list[int]] = defaultdict(list)
     work_groups: defaultdict[str, list[int]] = defaultdict(list)
+    url_groups: defaultdict[str, list[int]] = defaultdict(list)
     for i, row in enumerate(rows):
         sha = str(row.get("source_sha256") or "").strip().lower()
         if sha:
@@ -86,9 +107,13 @@ def audit(output_dir: str | Path | None = None) -> dict[str, Any]:
         if doi:
             doi_groups[doi.casefold()].append(i)
         work_groups[_work_key(row)].append(i)
+        canonical_url = _canonical_url(row)
+        if canonical_url:
+            url_groups[canonical_url].append(i)
 
     exact = [idxs for idxs in sha_groups.values() if len(idxs) > 1]
     same_doi = [idxs for idxs in doi_groups.values() if len(idxs) > 1]
+    canonical_urls = [idxs for idxs in url_groups.values() if len(idxs) > 1]
 
     fuzzy: list[dict[str, Any]] = []
     no_doi = [(i, row) for i, row in enumerate(rows) if not harvest.normalize_doi(row.get("doi"))]
@@ -105,19 +130,21 @@ def audit(output_dir: str | Path | None = None) -> dict[str, Any]:
                 fuzzy.append({"left": i, "right": j, "similarity": round(ratio, 4), "action": "REVIEW_SAME_WORK"})
 
     canonical: dict[int, str] = {}
-    for group in same_doi + exact:
+    for group in same_doi + exact + canonical_urls:
         best = max(group, key=lambda idx: _quality(rows[idx]))
         for idx in group:
             canonical[idx] = "PRIMARY" if idx == best else "ALTERNATE_SOURCE"
 
     result = {
-        "schema_version": "1.0",
+        "schema_version": "1.1",
         "documents": len(rows),
         "exact_duplicate_groups": len(exact),
         "same_doi_groups": len(same_doi),
+        "canonical_url_groups": len(canonical_urls),
         "fuzzy_review_pairs": len(fuzzy),
         "exact_duplicates": exact,
         "same_doi": same_doi,
+        "canonical_url_groups_detail": canonical_urls,
         "fuzzy_candidates": fuzzy,
         "canonical_roles": {str(k): v for k, v in canonical.items()},
         "policy": policy,
@@ -126,6 +153,18 @@ def audit(output_dir: str | Path | None = None) -> dict[str, Any]:
     audit_dir = root / "audit"
     audit_dir.mkdir(parents=True, exist_ok=True)
     (audit_dir / "source_dedup_version_audit.json").write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+    (audit_dir / "duplicate_audit.json").write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+    with (audit_dir / "duplicate_candidates.csv").open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=("left_document_id", "left_title", "right_document_id", "right_title", "similarity", "action"))
+        writer.writeheader()
+        for item in fuzzy:
+            left, right = rows[item["left"]], rows[item["right"]]
+            writer.writerow({
+                "left_document_id": left.get("document_key") or left.get("doi"), "left_title": left.get("title"),
+                "right_document_id": right.get("document_key") or right.get("doi"), "right_title": right.get("title"),
+                "similarity": item["similarity"], "action": item["action"],
+            })
+    _log(f"finished exact_groups={len(exact)} doi_groups={len(same_doi)} url_groups={len(canonical_urls)} fuzzy_pairs={len(fuzzy)}")
     return result
 
 
