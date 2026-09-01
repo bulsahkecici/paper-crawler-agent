@@ -1,0 +1,143 @@
+version: 1
+
+thresholds:
+  strong: 0.80
+  probable: 0.65
+  weak: 0.45
+
+method_anchors:
+  - natm
+  - new austrian tunnelling method
+  - tunnel boring machine
+  - tunnel boring
+  - tbm
+  - epb
+  - earth pressure balance
+  - shield tunnelling
+  - shield tunnel
+  - immersed tube tunnel
+
+tunnel_anchors:
+  - tunnel
+  - tunnels
+  - tunnelling
+  - tunneling
+  - road tunnel
+  - highway tunnel
+  - transportation tunnel
+  - karayolu tüneli
+  - tünel
+  - natm
+  - new austrian tunnelling method
+  - tunnel boring machine
+  - tbm
+  - epb
+  - earth pressure balance
+  - shield tunnelling
+  - immersed tube tunnel
+  - tunnel lining
+  - tunnel support
+  - tunnel excavation
+
+engineering_signals:
+  - construction
+  - settlement
+  - deformation
+  - structural defect
+  - defects
+  - crack detection
+  - geological investigation
+  - geotechnical investigation
+  - shield
+  - portal
+  - rehabilitation
+  - operating cost
+  - operational cost
+  - shotcrete
+  - rock bolt
+  - geotechnical
+  - geology
+  - lining
+  - excavation
+  - support design
+  - structural health monitoring
+  - monitoring
+  - rock mass
+  - cutterhead
+  - rock breaking
+  - support
+  - safety
+  - emergency
+  - fire
+  - crack
+  - inspection
+  - life cycle cost
+  - lifecycle cost
+  - construction cost
+  - maintenance cost
+  - operation cost
+  - ventilation
+  - lighting
+  - fire safety
+  - energy efficiency
+  - immersed tube
+  - highway
+  - road
+  - karayolu
+  - bakım
+  - işletme
+  - maliyet
+  - havalandırma
+  - aydınlatma
+  - envanter
+  - şartname
+
+negative_patterns:
+  - quantum tunnel
+  - quantum tunneling
+  - quantum tunnelling
+  - tunnel junction
+  - fet tunnel
+  - spintronic
+  - antiferromagnetic
+  - ssh tunnel
+  - vpn tunnel
+  - dns tunnel
+  - carpal tunnel
+  - cubital tunnel
+  - tarsal tunnel
+  - animal tunnel
+  - animal tunnels
+  - agricultural high tunnel
+  - agricultural high tunnels
+  - high tunnel crop
+  - wind tunnel
+  - particle tunneling
+  - soft particle tunneling
+  - underwater image
+  - image restoration
+  - 6g
+  - social media
+  - influencer
+  - natural gas price
+  - energy accounting
+  - energy reporting
+
+trusted_tunnel_sources:
+  - kgm.gov.tr
+  - fhwa.dot.gov
+  - tunnelsmanual.piarc.org
+  - piarc.org
+  - ita-aites.org
+
+generic_terms_requiring_tunnel_context:
+  - cost
+  - energy
+  - maintenance
+  - construction
+  - length
+  - traffic
+  - rehabilitation
+  - lighting
+  - ventilation
+  - service

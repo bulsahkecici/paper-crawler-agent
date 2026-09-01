@@ -35,6 +35,15 @@ class FakeLlmClient:
         return {"sections": [{"id": selected, "confidence": 0.95}], "reason": "Best allowed section."}
 
 
+class CountingLlmClient(FakeLlmClient):
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def chat_json(self, model: str, system: str, user: str) -> dict:
+        self.calls += 1
+        return super().chat_json(model, system, user)
+
+
 class HybridClassificationTests(unittest.TestCase):
     def test_non_loopback_model_server_rejected(self) -> None:
         self.assertFalse(hybrid.is_loopback_url("https://api.example.com/v1"))
@@ -71,6 +80,23 @@ class HybridClassificationTests(unittest.TestCase):
         if result["llm_review"].get("used"):
             self.assertEqual(result["classification_status"], "LLM_ACCEPTED")
 
+    def test_strong_rule_embedding_agreement_skips_qwen(self) -> None:
+        llm = CountingLlmClient()
+        result = hybrid.classify_hybrid(
+            {
+                "title": "Life cycle cost analysis of road tunnels",
+                "abstract": "Construction, operation and maintenance costs over the tunnel life cycle.",
+                "source": "crossref",
+                "relevance_status": "STRONG",
+            },
+            embedding_client=FakeEmbeddingClient(),
+            embedding_model="text-embedding-nomic-embed-text-v1.5",
+            llm_client=llm,
+            llm_model="qwen3.6-35b-a3b-mlx",
+        )
+        self.assertFalse(result["llm_review"]["used"])
+        self.assertEqual(llm.calls, 0)
+
 
 class HandoffTests(unittest.TestCase):
     def test_export_only_accepts_gated_source_and_preserves_sha(self) -> None:
@@ -82,6 +108,7 @@ class HandoffTests(unittest.TestCase):
         sha = hashlib.sha256(content).hexdigest()
         accepted = {
             "title": "Road tunnel life cycle cost",
+            "abstract": "Road tunnel construction, operation and maintenance life cycle cost.",
             "source_path": str(pdf),
             "source_sha256": sha,
             "document_type": "JOURNAL_ARTICLE",
@@ -106,7 +133,8 @@ class HandoffTests(unittest.TestCase):
 
         report = handoff_export.export_handoff(root)
         self.assertEqual(report["ready_for_handoff"], 1)
-        self.assertEqual(report["rejected"], 1)
+        self.assertEqual(report["rejected"], 0)
+        self.assertEqual(report["decision_counts"]["MANUAL_REVIEW"], 1)
         package = Path(report["package_root"])
         manifest_rows = [json.loads(line) for line in (package / "00_registry" / "manifest.jsonl").read_text().splitlines()]
         self.assertEqual(len(manifest_rows), 1)

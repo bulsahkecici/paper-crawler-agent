@@ -63,6 +63,9 @@ sections:
 gap_search:
   max_sections_per_pass: 12
   queries_per_section: 4
-  per_source: 12
+  per_source: 8
+  max_new_candidates_per_section: 30
+  max_downloads_per_section: 8
+  diminishing_returns_queries: 2
   acquire: true
   rerun_classification_after_pass: true

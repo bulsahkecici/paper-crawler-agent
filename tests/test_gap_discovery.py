@@ -38,7 +38,7 @@ class GapDiscoveryTests(unittest.TestCase):
             queries = gap_discovery._queries_for_section("5.7.2", 3)
         self.assertEqual(len(queries), 3)
         self.assertEqual(queries[0], "tunnel ventilation energy optimization")
-        self.assertIn("jet fan energy", queries)
+        self.assertIn("road tunnel jet fan energy", queries)
 
 
 if __name__ == "__main__":

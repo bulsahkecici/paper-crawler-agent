@@ -18,6 +18,10 @@ from pypdf import PdfReader
 import tunnel_harvest as harvest
 
 
+def _log(message: str) -> None:
+    print(f"[pdf-enrich] {message}", flush=True)
+
+
 def _read_jsonl(path: Path) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     if not path.exists():
@@ -87,18 +91,34 @@ def enrich_catalog(output_dir: str | Path | None = None, *, max_pages: int = 3) 
     no_text_layer = 0
     skipped_with_abstract = 0
     errors: list[dict[str, str]] = []
+    metrics = {key: 0 for key in (
+        "total_candidates", "pdf_candidates", "downloaded_pdfs", "valid_pdfs", "corrupt_pdfs",
+        "extracted_full_text", "abstract_only", "webpage_text", "title_only", "extraction_errors", "no_text",
+    )}
 
     for catalog_path in paths:
         rows = _read_jsonl(catalog_path)
         if not rows:
             continue
+        _log(f"catalog={catalog_path} rows={len(rows)}")
+        metrics["total_candidates"] += len(rows)
         changed = False
         for row in rows:
+            path = _source_path(row)
+            if path:
+                metrics["pdf_candidates"] += 1
+                metrics["downloaded_pdfs"] += 1
             if str(row.get("abstract") or "").strip():
                 skipped_with_abstract += 1
+                metrics["abstract_only"] += 1
+                if path:
+                    metrics["valid_pdfs"] += 1
                 continue
-            path = _source_path(row)
             if not path:
+                if row.get("raw_html_path"):
+                    metrics["webpage_text"] += 1
+                else:
+                    metrics["title_only"] += 1
                 continue
             extraction = extract_first_pages(path, max_pages=max_pages)
             row["light_pdf_extraction"] = {
@@ -110,14 +130,22 @@ def enrich_catalog(output_dir: str | Path | None = None, *, max_pages: int = 3) 
                 row["abstract"] = extraction["light_text"]
                 row["classification_input"] = "LIGHT_PDF_FIRST_PAGES"
                 enriched += 1
+                metrics["extracted_full_text"] += 1
+                metrics["valid_pdfs"] += 1
                 changed = True
             else:
                 row["classification_input"] = "TITLE_METADATA_ONLY"
                 row["needs_tunnelbookai_fulltext_review"] = True
                 no_text_layer += 1
+                metrics["no_text"] += 1
                 changed = True
             if extraction["extraction_error"]:
                 errors.append({"path": str(path), "error": str(extraction["extraction_error"])})
+                metrics["extraction_errors"] += 1
+                metrics["corrupt_pdfs"] += 1
+            processed = enriched + no_text_layer
+            if processed and processed % 25 == 0:
+                _log(f"processed={processed} enriched={enriched} no_text={no_text_layer}")
         if changed:
             _write_jsonl(catalog_path, rows)
 
@@ -127,11 +155,13 @@ def enrich_catalog(output_dir: str | Path | None = None, *, max_pages: int = 3) 
         "no_text_layer": no_text_layer,
         "skipped_with_abstract": skipped_with_abstract,
         "errors": errors,
+        **metrics,
         "semantic_boundary": "Light extraction is provisional classification input only; TunnelBookAI still runs full Docling conversion.",
     }
     audit = root / "audit"
     audit.mkdir(parents=True, exist_ok=True)
     (audit / "light_pdf_extract_audit.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    _log(f"finished enriched={enriched} no_text={no_text_layer} errors={len(errors)}")
     return report
 
 

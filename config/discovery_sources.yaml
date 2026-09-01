@@ -3,6 +3,7 @@ version: 1
 policy:
   paid_search_apis: false
   respect_robots_txt: true
+  robots_cache_ttl_seconds: 3600
   public_network_only: true
   max_redirects: 5
   request_timeout_seconds: 25
@@ -39,6 +40,7 @@ academic_sources:
     free: true
     endpoint: "https://api.core.ac.uk/v3/search/works"
     api_key_env: "CORE_API_KEY"
+    max_consecutive_failures: 2
     note: "Runs best-effort without a key; an optional free key may improve reliability/rate limits."
   semantic_scholar:
     enabled: false
@@ -55,8 +57,9 @@ institutional_sources:
     domains: ["kgm.gov.tr", "www.kgm.gov.tr"]
     seed_urls:
       - "https://www.kgm.gov.tr/Sayfalar/KGM/SiteTr/Yayinlar/Yayinlar.aspx"
-    internal_search_urls:
-      - "https://www.kgm.gov.tr/Sayfalar/KGM/SiteTr/Arama/AramaSonuc.aspx?k={query}"
+    # KGM's SharePoint search redirects automated callers to authentication.
+    # Keep public publication/sitemap crawling, but do not queue those 401 URLs.
+    internal_search_urls: []
     sitemap_probe: true
     common_crawl_expand: false
 

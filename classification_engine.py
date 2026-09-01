@@ -218,6 +218,12 @@ def detect_source_class(record: dict[str, Any], document_type: str) -> tuple[str
     publisher_code = None
     if "kgm.gov.tr" in host or "karayolları genel müdürlüğü" in blob or re.search(r"\bkgm\b", blob):
         return "TR_OFFICIAL", "KGM", 0.99
+    if "fhwa.dot.gov" in host or "federal highway administration" in blob:
+        return "INT_OFFICIAL", "FHWA", 0.99
+    if "piarc" in host or "world road association" in blob:
+        return "INT_OFFICIAL", "PIARC", 0.99
+    if "ita-aites" in host or "international tunnelling" in blob:
+        return "PROFESSIONAL_ORGANIZATION", "ITA_AITES", 0.99
 
     classes = policy.get("source_classes") or {}
     for cls_name, cfg in classes.items():

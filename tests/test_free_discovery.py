@@ -52,6 +52,46 @@ class FreeDiscoveryTests(unittest.TestCase):
         self.assertTrue(any("ventilation" in q and "energy" in q for q in queries))
         self.assertTrue(any("geotechnical" in q for q in queries))
 
+    def test_provider_deadline_skips_to_next_source(self) -> None:
+        config = {
+            "academic_sources": {
+                "openalex": {"enabled": True},
+                "crossref": {"enabled": True},
+                "europe_pmc": {"enabled": False},
+                "doaj": {"enabled": False},
+                "arxiv": {"enabled": False},
+            }
+        }
+        paper = harvest.Paper(title="Road tunnel cost", source="crossref")
+
+        def bounded_call(callback, *_args, **_kwargs):
+            if callback is harvest.search_openalex:
+                raise discovery.SourceDeadlineExceeded("source exceeded 30s deadline")
+            return [paper]
+
+        with patch.object(discovery, "_config", return_value=config), patch.object(
+            discovery, "_run_with_source_deadline", side_effect=bounded_call
+        ):
+            records, errors = discovery.discover_existing_academic("tunnel", per_source=1)
+
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0].discovery_source, "crossref")
+        self.assertEqual(len(errors), 1)
+        self.assertIn("openalex: source exceeded 30s deadline", errors[0])
+
+    def test_oa_fallback_is_used_after_primary_pdf_failure(self) -> None:
+        record = discovery.DiscoveryRecord(
+            title="Road tunnel ventilation", source="openalex", discovery_source="openalex",
+            doi="10.1000/tunnel.1", pdf_url="https://blocked.example.org/paper.pdf",
+        )
+        with patch.object(discovery, "_blocked_domain", return_value=False), patch.object(
+            discovery.harvest, "resolve_pdf_url", return_value="https://repository.example.org/paper.pdf"
+        ):
+            self.assertEqual(
+                discovery._oa_fallback_url(record, "https://blocked.example.org/paper.pdf"),
+                "https://repository.example.org/paper.pdf",
+            )
+
     def test_dedup_prefers_direct_pdf_and_richer_record_for_same_doi(self) -> None:
         base = discovery.DiscoveryRecord(
             title="Tunnel maintenance cost",
@@ -73,6 +113,20 @@ class FreeDiscoveryTests(unittest.TestCase):
         rows = discovery.deduplicate([base, richer])
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0].pdf_url, "https://example.org/item.pdf")
+
+    def test_catalog_merge_collapses_exact_title_author_year_variant(self) -> None:
+        base = {
+            "title": "Road Tunnel Ventilation Energy Study", "authors": ["A. Author"], "year": "2024",
+            "source_url": "https://example.org/a", "abstract": "brief",
+        }
+        richer = {
+            **base, "source_url": "https://repository.example.org/b", "abstract": "a richer abstract",
+            "source_path": "/tmp/road-tunnel.pdf",
+        }
+        rows = classify_catalog._merge_records([], [base, richer])
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["source_path"], "/tmp/road-tunnel.pdf")
+        self.assertEqual(len(rows[0]["alternate_records"]), 1)
 
     def test_html_parser_finds_relevant_links_and_document_type(self) -> None:
         parsed = discovery.parse_html(

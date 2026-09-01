@@ -23,14 +23,17 @@ import html
 import ipaddress
 import json
 import os
+import random
 import re
+import signal
 import socket
+import threading
 import time
 import urllib.parse
 import urllib.robotparser
 import xml.etree.ElementTree as ET
 from collections import Counter, defaultdict, deque
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Iterable
@@ -39,12 +42,54 @@ import requests
 import yaml
 
 import classification_engine as classifier
+import hybrid_classifier as hybrid
+import relevance_engine as relevance
+import source_health
 import tunnel_harvest as harvest
 
 ROOT = Path(__file__).resolve().parent
 CONFIG_DIR = ROOT / "config"
 USER_AGENT = harvest.USER_AGENT
 HEADERS = {"User-Agent": USER_AGENT, "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,application/pdf;q=0.8,*/*;q=0.5"}
+_ROBOTS_CACHE: dict[str, tuple[float, urllib.robotparser.RobotFileParser | None]] = {}
+SOURCE_DEADLINE_SECONDS = 30
+
+
+def _log(message: str) -> None:
+    print(f"[discovery] {message}", flush=True)
+
+
+class SourceDeadlineExceeded(TimeoutError):
+    """Raised when one discovery provider exceeds the whole-call deadline."""
+
+
+def _run_with_source_deadline(callback, *args, seconds: int = SOURCE_DEADLINE_SECONDS, **kwargs):
+    """Run a provider call with a hard wall-clock limit on Unix main threads.
+
+    ``requests``' read timeout is reset whenever a server sends a little data,
+    so it cannot bound a slow/stalled streaming response.  This guard stops the
+    complete provider call after 30 seconds, allowing the next provider to run.
+    """
+    if (
+        not hasattr(signal, "setitimer")
+        or threading.current_thread() is not threading.main_thread()
+    ):
+        return callback(*args, **kwargs)
+
+    def _expired(_signum, _frame):
+        raise SourceDeadlineExceeded(f"source exceeded {seconds}s deadline")
+
+    previous_handler = signal.getsignal(signal.SIGALRM)
+    previous_timer = signal.setitimer(signal.ITIMER_REAL, 0)
+    signal.signal(signal.SIGALRM, _expired)
+    signal.setitimer(signal.ITIMER_REAL, max(1, seconds))
+    try:
+        return callback(*args, **kwargs)
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous_handler)
+        if previous_timer[0] > 0:
+            signal.setitimer(signal.ITIMER_REAL, *previous_timer)
 
 
 @dataclass
@@ -66,6 +111,11 @@ class DiscoveryRecord:
     metadata_only: bool = False
     access_kind: str = "discovered"
     extra: dict[str, Any] = field(default_factory=dict)
+    tunnel_relevance_score: float = 0.0
+    relevance_status: str = "UNASSESSED"
+    relevance_signals: list[str] = field(default_factory=list)
+    negative_signals: list[str] = field(default_factory=list)
+    relevance_method: str = "deterministic_v1"
 
     def key(self) -> str:
         doi = harvest.normalize_doi(self.doi)
@@ -82,6 +132,20 @@ class DiscoveryRecord:
         payload["doi"] = harvest.normalize_doi(self.doi)
         payload["discovery_key"] = self.key()
         return payload
+
+
+@dataclass(frozen=True)
+class URLSafetyResult:
+    safe: bool
+    reason: str
+
+
+class DNSResolutionError(ConnectionError):
+    pass
+
+
+class SecurityBlockedError(ValueError):
+    pass
 
 
 def _config() -> dict[str, Any]:
@@ -120,36 +184,54 @@ def _host(url: str | None) -> str:
         return ""
 
 
-def is_public_web_url(url: str) -> bool:
-    """Reject loopback/private/link-local/multicast/reserved targets before fetch."""
+def url_safety(url: str) -> URLSafetyResult:
+    """Classify URL safety without conflating DNS failures with SSRF blocks."""
     try:
         parsed = urllib.parse.urlparse(str(url or "").strip())
     except ValueError:
-        return False
+        return URLSafetyResult(False, "INVALID_HOST")
     if parsed.scheme not in {"http", "https"} or not parsed.hostname:
-        return False
+        return URLSafetyResult(False, "INVALID_SCHEME")
     host = parsed.hostname.lower()
     if host in {"localhost", "localhost.localdomain"}:
-        return False
+        return URLSafetyResult(False, "LOOPBACK")
     try:
         direct = ipaddress.ip_address(host)
-        return not (direct.is_private or direct.is_loopback or direct.is_link_local or direct.is_multicast or direct.is_reserved or direct.is_unspecified)
+        if direct.is_loopback:
+            return URLSafetyResult(False, "LOOPBACK")
+        if direct.is_link_local:
+            return URLSafetyResult(False, "LINK_LOCAL")
+        if direct.is_private:
+            return URLSafetyResult(False, "PRIVATE_IP")
+        if direct.is_multicast or direct.is_reserved or direct.is_unspecified:
+            return URLSafetyResult(False, "RESERVED")
+        return URLSafetyResult(True, "PUBLIC")
     except ValueError:
         pass
     try:
         infos = socket.getaddrinfo(host, parsed.port or (443 if parsed.scheme == "https" else 80), type=socket.SOCK_STREAM)
     except OSError:
-        return False
+        return URLSafetyResult(False, "DNS_RESOLUTION_FAILED")
     if not infos:
-        return False
+        return URLSafetyResult(False, "DNS_RESOLUTION_FAILED")
     for info in infos:
         try:
             addr = ipaddress.ip_address(info[4][0])
         except ValueError:
-            return False
-        if addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_multicast or addr.is_reserved or addr.is_unspecified:
-            return False
-    return True
+            return URLSafetyResult(False, "INVALID_HOST")
+        if addr.is_loopback:
+            return URLSafetyResult(False, "LOOPBACK")
+        if addr.is_link_local:
+            return URLSafetyResult(False, "LINK_LOCAL")
+        if addr.is_private:
+            return URLSafetyResult(False, "PRIVATE_IP")
+        if addr.is_multicast or addr.is_reserved or addr.is_unspecified:
+            return URLSafetyResult(False, "RESERVED")
+    return URLSafetyResult(True, "PUBLIC")
+
+
+def is_public_web_url(url: str) -> bool:
+    return url_safety(url).safe
 
 
 def _blocked_domain(url: str) -> bool:
@@ -167,18 +249,30 @@ def _robots_allowed(url: str, session: requests.Session) -> bool:
         return True
     parsed = urllib.parse.urlparse(url)
     robots_url = f"{parsed.scheme}://{parsed.netloc}/robots.txt"
-    if not is_public_web_url(robots_url):
+    cache_key = f"{parsed.scheme}://{parsed.netloc}".lower()
+    ttl = float(policy.get("robots_cache_ttl_seconds") or 3600)
+    cached = _ROBOTS_CACHE.get(cache_key)
+    if cached and time.monotonic() - cached[0] < ttl:
+        parser = cached[1]
+        return True if parser is None else parser.can_fetch(USER_AGENT, url)
+    safety = url_safety(robots_url)
+    if safety.reason == "DNS_RESOLUTION_FAILED":
+        return True
+    if not safety.safe:
         return False
     try:
         response = session.get(robots_url, headers=HEADERS, timeout=8, allow_redirects=False)
         if response.status_code >= 400:
+            _ROBOTS_CACHE[cache_key] = (time.monotonic(), None)
             return True
         parser = urllib.robotparser.RobotFileParser()
         parser.set_url(robots_url)
         parser.parse(response.text.splitlines())
+        _ROBOTS_CACHE[cache_key] = (time.monotonic(), parser)
         return parser.can_fetch(USER_AGENT, url)
     except requests.RequestException:
         # Fail open for unavailable robots.txt, not for explicit disallow rules.
+        _ROBOTS_CACHE[cache_key] = (time.monotonic(), None)
         return True
 
 
@@ -196,8 +290,11 @@ def safe_get(
     timeout = float(timeout or cfg.get("request_timeout_seconds") or 25)
     sess = session or requests.Session()
     current = normalize_url(url)
-    if not is_public_web_url(current):
-        raise ValueError(f"Unsafe/non-public URL: {url}")
+    safety = url_safety(current)
+    if safety.reason == "DNS_RESOLUTION_FAILED":
+        raise DNSResolutionError(f"DNS resolution failed: {_host(current)}")
+    if not safety.safe:
+        raise SecurityBlockedError(f"Security blocked URL ({safety.reason}): {url}")
     if _blocked_domain(current):
         raise ValueError(f"Acquisition blocked by policy: {_host(current)}")
     if respect_robots and not _robots_allowed(current, sess):
@@ -213,9 +310,13 @@ def safe_get(
         if not location:
             response.raise_for_status()
         nxt = normalize_url(urllib.parse.urljoin(current, location))
-        if not is_public_web_url(nxt):
+        safety = url_safety(nxt)
+        if safety.reason == "DNS_RESOLUTION_FAILED":
             response.close()
-            raise ValueError(f"Redirect to unsafe/non-public URL: {nxt}")
+            raise DNSResolutionError(f"DNS resolution failed: {_host(nxt)}")
+        if not safety.safe:
+            response.close()
+            raise SecurityBlockedError(f"Redirect security blocked ({safety.reason}): {nxt}")
         if _blocked_domain(nxt):
             response.close()
             raise ValueError(f"Redirect to blocked acquisition domain: {_host(nxt)}")
@@ -323,8 +424,58 @@ def taxonomy_queries(max_queries: int | None = None) -> list[str]:
             if len(q) < 4 or q.lower() in seen:
                 continue
             seen.add(q.lower())
-            queries.append(q)
+            queries.append(qualify_tunnel_query(q))
     return queries[:max_queries] if max_queries else queries
+
+
+def qualify_tunnel_query(query: str) -> str:
+    """Ensure broad taxonomy terms never become unqualified web/API queries."""
+    text = re.sub(r"\s+", " ", str(query or "")).strip()
+    lowered = text.casefold()
+    policy = relevance._policy()
+    anchors = [str(x).casefold() for x in (policy.get("tunnel_anchors") or [])]
+    if any(anchor in lowered for anchor in anchors):
+        return text
+    generic = [str(x).casefold() for x in (policy.get("generic_terms_requiring_tunnel_context") or [])]
+    if any(term == lowered or term in lowered for term in generic):
+        return f"tunnel {text}"
+    return f"tunnel {text}"
+
+
+def _with_relevance(record: DiscoveryRecord) -> DiscoveryRecord:
+    decision = relevance.evaluate(record.as_dict())
+    return replace(record, **decision)
+
+
+def filter_relevant_records(
+    records: Iterable[DiscoveryRecord], *, embedding_client: hybrid.LocalOpenAIClient | None = None,
+    embedding_model: str | None = None, profile_vectors: dict[str, list[float]] | None = None,
+) -> tuple[list[DiscoveryRecord], int]:
+    kept: list[DiscoveryRecord] = []
+    rejected = 0
+    for record in records:
+        noncontent = relevance.noncontent_decision(record.as_dict())
+        if noncontent["noncontent_status"] == "REJECT_NONCONTENT_PAGE":
+            rejected += 1
+            continue
+        evaluated = _with_relevance(record)
+        if evaluated.relevance_status == "WEAK" and embedding_client and embedding_model:
+            try:
+                scores = hybrid.embedding_scores(evaluated.as_dict(), embedding_client, embedding_model, profile_vectors=profile_vectors)
+                best = float((scores or [{}])[0].get("score") or 0.0)
+                if best >= 0.62:
+                    evaluated = replace(
+                        evaluated, relevance_status="PROBABLE",
+                        tunnel_relevance_score=max(float(evaluated.tunnel_relevance_score), best),
+                        relevance_method="deterministic_plus_local_embedding",
+                    )
+            except (requests.RequestException, ValueError, OSError):
+                pass
+        if evaluated.relevance_status in {"STRONG", "PROBABLE", "WEAK"}:
+            kept.append(evaluated)
+        else:
+            rejected += 1
+    return kept, rejected
 
 
 def relevance_terms() -> tuple[str, ...]:
@@ -358,7 +509,44 @@ def _paper_record(paper: harvest.Paper, query: str) -> DiscoveryRecord:
     )
 
 
-def discover_existing_academic(query: str, per_source: int = 12) -> tuple[list[DiscoveryRecord], list[str]]:
+def _provider_failure_bucket(exc: Exception) -> str:
+    """Keep provider health diagnostics actionable without exposing stack traces."""
+    if isinstance(exc, DNSResolutionError) or isinstance(exc, socket.gaierror):
+        return "dns_failures"
+    if isinstance(exc, (requests.ConnectTimeout, requests.ReadTimeout, TimeoutError)):
+        return "timeout_failures"
+    response = getattr(exc, "response", None)
+    status = getattr(response, "status_code", None)
+    if status:
+        return f"http_{status}_failures"
+    return "other_failures"
+
+
+def _provider_call(name: str, fn: Any, query: str, limit: int) -> Any:
+    """Bounded OpenAlex 429 retry; the outer circuit breaker handles final failure."""
+    attempts = 3 if name == "openalex" else 1
+    for attempt in range(attempts):
+        try:
+            return _run_with_source_deadline(fn, query, limit)
+        except requests.HTTPError as exc:
+            status = getattr(exc.response, "status_code", None)
+            if status != 429 or attempt + 1 >= attempts:
+                raise
+            retry_header = getattr(exc.response, "headers", {}).get("Retry-After")
+            try:
+                delay = float(retry_header)
+            except (TypeError, ValueError):
+                delay = float(2 ** attempt)
+            delay = min(8.0, delay + random.uniform(0, 0.25))
+            _log(f"source=openalex rate_limited retry={attempt + 2}/{attempts} delay={delay:.2f}s")
+            time.sleep(delay)
+
+
+def discover_existing_academic(
+    query: str, per_source: int = 12, disabled_sources: set[str] | None = None,
+    provider_health: dict[str, Counter[str]] | None = None,
+    health_registry: source_health.SourceHealthRegistry | None = None,
+) -> tuple[list[DiscoveryRecord], list[str]]:
     cfg = _config().get("academic_sources") or {}
     functions = {
         "openalex": harvest.search_openalex,
@@ -369,13 +557,37 @@ def discover_existing_academic(query: str, per_source: int = 12) -> tuple[list[D
     }
     records: list[DiscoveryRecord] = []
     errors: list[str] = []
+    disabled_sources = disabled_sources or set()
     for name, fn in functions.items():
+        if name in disabled_sources or (health_registry is not None and not health_registry.available(name)):
+            _log(f"source={name} skipped for this run after repeated failures")
+            continue
         if not (cfg.get(name) or {}).get("enabled", False):
             continue
         try:
-            batch = fn(query, per_source)
+            if provider_health is not None:
+                provider_health[name]["requests"] += 1
+            _log(f"source={name} query={query!r} started")
+            batch = _provider_call(name, fn, query, per_source)
+            if health_registry is not None:
+                health_registry.success(name)
+            if provider_health is not None:
+                provider_health[name]["successful_requests"] += 1
+                provider_health[name]["records_seen"] += len(batch)
+            _log(f"source={name} query={query!r} records={len(batch)}")
         except Exception as exc:  # noqa: BLE001
+            if health_registry is not None:
+                retry_after = None
+                if getattr(getattr(exc, "response", None), "status_code", None) == 429:
+                    try:
+                        retry_after = float(exc.response.headers.get("Retry-After") or 0)
+                    except (TypeError, ValueError):
+                        retry_after = 0
+                health_registry.failure(name, _provider_failure_bucket(exc), retry_after=retry_after)
+            if provider_health is not None:
+                provider_health[name][_provider_failure_bucket(exc)] += 1
             errors.append(f"{name}: {exc}")
+            _log(f"source={name} query={query!r} skipped: {exc}")
             continue
         records.extend(_paper_record(p, query) for p in batch)
     return records, errors
@@ -513,18 +725,58 @@ def search_core(query: str, limit: int = 20) -> list[DiscoveryRecord]:
     return records
 
 
-def discover_academic(query: str, per_source: int = 12) -> tuple[list[DiscoveryRecord], list[str]]:
-    records, errors = discover_existing_academic(query, per_source=per_source)
+def discover_academic(
+    query: str, per_source: int = 12, disabled_sources: set[str] | None = None,
+    provider_health: dict[str, Counter[str]] | None = None,
+    health_registry: source_health.SourceHealthRegistry | None = None,
+) -> tuple[list[DiscoveryRecord], list[str]]:
+    disabled_sources = disabled_sources or set()
+    records, errors = discover_existing_academic(
+        query, per_source=per_source, disabled_sources=disabled_sources, provider_health=provider_health,
+        health_registry=health_registry,
+    )
     for name, fn in (("openaire", search_openaire), ("core", search_core)):
+        if name in disabled_sources or (health_registry is not None and not health_registry.available(name)):
+            _log(f"source={name} skipped for this run after repeated failures")
+            continue
         try:
-            records.extend(fn(query, per_source))
+            if provider_health is not None:
+                provider_health[name]["requests"] += 1
+            _log(f"source={name} query={query!r} started")
+            batch = _run_with_source_deadline(fn, query, per_source)
+            if health_registry is not None:
+                health_registry.success(name)
+            records.extend(batch)
+            if provider_health is not None:
+                provider_health[name]["successful_requests"] += 1
+                provider_health[name]["records_seen"] += len(batch)
+            _log(f"source={name} query={query!r} completed")
         except Exception as exc:  # noqa: BLE001
+            if health_registry is not None:
+                health_registry.failure(name, _provider_failure_bucket(exc))
+            if provider_health is not None:
+                provider_health[name][_provider_failure_bucket(exc)] += 1
             errors.append(f"{name}: {exc}")
+            _log(f"source={name} query={query!r} skipped: {exc}")
     cfg = (_config().get("academic_sources") or {}).get("semantic_scholar") or {}
     if cfg.get("enabled", False):
         try:
-            records.extend(_paper_record(p, query) for p in harvest.search_semantic_scholar(query, per_source))
+            if health_registry is not None and not health_registry.available("semantic_scholar"):
+                return records, errors
+            if provider_health is not None:
+                provider_health["semantic_scholar"]["requests"] += 1
+            batch = harvest.search_semantic_scholar(query, per_source)
+            if health_registry is not None:
+                health_registry.success("semantic_scholar")
+            records.extend(_paper_record(p, query) for p in batch)
+            if provider_health is not None:
+                provider_health["semantic_scholar"]["successful_requests"] += 1
+                provider_health["semantic_scholar"]["records_seen"] += len(batch)
         except Exception as exc:  # noqa: BLE001
+            if health_registry is not None:
+                health_registry.failure("semantic_scholar", _provider_failure_bucket(exc))
+            if provider_health is not None:
+                provider_health["semantic_scholar"][_provider_failure_bucket(exc)] += 1
             errors.append(f"semantic_scholar: {exc}")
     return records, errors
 
@@ -946,9 +1198,79 @@ def _snapshot_web(record: DiscoveryRecord, root: Path) -> dict[str, Any]:
     }
 
 
+def _oa_fallback_url(record: DiscoveryRecord, attempted_url: str) -> str | None:
+    """Find a legal OA PDF alternative after a publisher URL is blocked or fails."""
+    if not record.doi:
+        return None
+    candidate = harvest.resolve_pdf_url(harvest.Paper(
+        title=record.title,
+        source=record.source,
+        authors=record.authors,
+        year=record.year,
+        abstract=record.abstract,
+        venue=record.publisher,
+        doi=record.doi,
+        pdf_url=None,
+        landing_url=record.landing_url,
+        query=record.discovery_query,
+    ))
+    if not candidate or normalize_url(candidate) == normalize_url(attempted_url):
+        return None
+    if _blocked_domain(candidate):
+        return None
+    return candidate
+
+
+def _acquisition_failure_status(exc: Exception, record: DiscoveryRecord) -> str:
+    if isinstance(exc, DNSResolutionError):
+        return "DNS_FAILURE"
+    if isinstance(exc, SecurityBlockedError):
+        return "SECURITY_BLOCKED"
+    if isinstance(exc, PermissionError):
+        return "ROBOTS_BLOCKED"
+    if isinstance(exc, requests.exceptions.ConnectTimeout):
+        return "CONNECT_TIMEOUT"
+    if isinstance(exc, requests.exceptions.ReadTimeout):
+        return "READ_TIMEOUT"
+    if isinstance(exc, requests.exceptions.HTTPError):
+        status = getattr(exc.response, "status_code", None)
+        if status == 401:
+            return "LOGIN_REQUIRED" if "kgm.gov.tr" in _host(record.source_url or record.landing_url) else "HTTP_401"
+        if status == 403:
+            return "HTTP_403"
+        if status == 404:
+            return "HTTP_404"
+        if status == 429:
+            return "HTTP_429"
+        if status and 500 <= status <= 599:
+            return "HTTP_5XX"
+    message = str(exc).casefold()
+    if "blocked by policy" in message:
+        return "BLOCKED_DOMAIN"
+    if "not a pdf" in message or "content-type" in message:
+        return "INVALID_CONTENT_TYPE"
+    if "too large" in message or "exceeds configured size" in message:
+        return "SOURCE_TOO_LARGE"
+    if "pdf" in message and ("validation" in message or "header" in message):
+        return "PDF_VALIDATION_FAILED"
+    return "UNKNOWN_ACQUISITION_ERROR"
+
+
 def acquire_record(record: DiscoveryRecord, output_root: Path) -> dict[str, Any]:
     payload = record.as_dict()
     payload["paper_crawler_status"] = "DISCOVERED"
+    noncontent = relevance.noncontent_decision(payload)
+    payload.update(noncontent)
+    if noncontent["noncontent_status"] == "REJECT_NONCONTENT_PAGE":
+        payload["acquisition_status"] = "REJECT_NONCONTENT_PAGE"
+        payload["paper_crawler_status"] = "FILTERED"
+        return payload
+    decision = relevance.evaluate(payload)
+    payload.update(decision)
+    if not relevance.acquisition_allowed(decision, payload):
+        payload["acquisition_status"] = "REJECT_IRRELEVANT"
+        payload["paper_crawler_status"] = "REJECTED"
+        return payload
     if record.metadata_only:
         payload["acquisition_status"] = "METADATA_ONLY"
         return payload
@@ -966,7 +1288,16 @@ def acquire_record(record: DiscoveryRecord, output_root: Path) -> dict[str, Any]
                 sha, size = _hash_file(dest)
                 resolved = url
             else:
-                sha, size, resolved = secure_download_pdf(url, dest)
+                try:
+                    sha, size, resolved = secure_download_pdf(url, dest)
+                except Exception as first_exc:
+                    fallback = _oa_fallback_url(record, url)
+                    if not fallback:
+                        raise
+                    _log(f"OA fallback: {record.title[:70]!r} → {fallback}")
+                    sha, size, resolved = secure_download_pdf(fallback, dest)
+                    payload["initial_acquisition_error"] = str(first_exc)
+                    payload["oa_fallback_url"] = fallback
             payload.update({
                 "source_path": str(dest),
                 "local_pdf_path": str(dest),
@@ -982,8 +1313,10 @@ def acquire_record(record: DiscoveryRecord, output_root: Path) -> dict[str, Any]
             payload["acquisition_status"] = "SNAPSHOTTED_WEB"
         payload["paper_crawler_status"] = "STAGING"
     except Exception as exc:  # noqa: BLE001
-        payload["acquisition_status"] = "FAILED"
+        payload["acquisition_status"] = _acquisition_failure_status(exc, record)
         payload["acquisition_error"] = str(exc)
+        if record.source_class in {"TR_OFFICIAL", "INT_OFFICIAL"}:
+            payload["metadata_only"] = True
     return payload
 
 
@@ -1001,6 +1334,9 @@ def discover_all(
     per_source: int = 10,
     acquire: bool = True,
     expand_dynamic: bool = True,
+    embedding_server: str | None = None,
+    embedding_model: str | None = None,
+    use_local_embedding: bool = True,
 ) -> dict[str, Any]:
     """Run bounded free discovery and optionally acquire public sources."""
     if output_dir is not None:
@@ -1012,15 +1348,41 @@ def discover_all(
     records: list[DiscoveryRecord] = []
     errors: list[str] = []
     source_counts: Counter[str] = Counter()
+    provider_health: dict[str, Counter[str]] = defaultdict(Counter)
+    health_registry = source_health.SourceHealthRegistry(root / "audit" / "source_health.json")
+    rejected_irrelevant = 0
+    oai_seen = oai_relevant = oai_rejected_irrelevant = 0
+    provider_failures: Counter[str] = Counter()
+    disabled_sources: set[str] = set()
+    source_cfg = _config().get("academic_sources") or {}
+    embedding_client, selected_embedding_model = hybrid.detect_local_embedding(embedding_server, embedding_model) if use_local_embedding else (None, None)
+    relevance_profile_vectors: dict[str, list[float]] = {}
 
     # Academic discovery is query-driven.
-    for query in queries:
-        batch, batch_errors = discover_academic(query, per_source=per_source)
+    _log(f"starting discovery: queries={len(queries)} per_source={per_source} acquire={acquire}")
+    for index, query in enumerate(queries, 1):
+        _log(f"query {index}/{len(queries)}: {query!r}")
+        batch, batch_errors = discover_academic(
+            query, per_source=per_source, disabled_sources=disabled_sources, provider_health=provider_health,
+            health_registry=health_registry,
+        )
+        batch, rejected = filter_relevant_records(batch, embedding_client=embedding_client, embedding_model=selected_embedding_model, profile_vectors=relevance_profile_vectors)
+        rejected_irrelevant += rejected
         records.extend(batch)
         errors.extend(batch_errors)
+        for error in batch_errors:
+            name = error.partition(":")[0]
+            max_failures = int((source_cfg.get(name) or {}).get("max_consecutive_failures") or 2)
+            provider_failures[name] += 1
+            if provider_failures[name] >= max_failures and name not in disabled_sources:
+                disabled_sources.add(name)
+                provider_health[name]["disabled"] = 1
+                _log(f"source={name} disabled for remaining queries after {provider_failures[name]} failures")
         for item in batch:
             source_counts[item.discovery_source] += 1
+            provider_health[item.discovery_source]["relevant_records"] += 1
         if len(records) >= max_queries * per_source * 4:
+            _log(f"academic record cap reached: records={len(records)}")
             break
         time.sleep(0.08)
 
@@ -1030,6 +1392,8 @@ def discover_all(
         if not cfg.get("enabled", False) or (cfg.get("metadata_only") and not cfg.get("seed_urls")):
             continue
         batch, batch_errors = crawl_seed_source(name, cfg)
+        batch, rejected = filter_relevant_records(batch, embedding_client=embedding_client, embedding_model=selected_embedding_model, profile_vectors=relevance_profile_vectors)
+        rejected_irrelevant += rejected
         records.extend(batch)
         errors.extend(batch_errors)
         source_counts[f"institutional:{name}"] += len(batch)
@@ -1045,12 +1409,18 @@ def discover_all(
                     ))
 
     records = deduplicate(records)
+    _log(f"discovery complete: unique_records={len(records)}; starting acquisition={acquire}")
 
     # DergiPark OAI-PMH is derived from journal URLs found by academic discovery.
     oai_endpoints = {ep for rec in records for ep in [dergipark_oai_endpoint(rec.landing_url or rec.source_url or "")] if ep}
     for endpoint in sorted(oai_endpoints)[:25]:
         try:
-            batch = harvest_oai(endpoint, limit=100)
+            raw_batch = harvest_oai(endpoint, limit=100)
+            oai_seen += len(raw_batch)
+            batch, rejected = filter_relevant_records(raw_batch, embedding_client=embedding_client, embedding_model=selected_embedding_model, profile_vectors=relevance_profile_vectors)
+            oai_relevant += len(batch)
+            oai_rejected_irrelevant += rejected
+            rejected_irrelevant += rejected
             records.extend(batch)
             source_counts["oai_pmh"] += len(batch)
         except Exception as exc:  # noqa: BLE001
@@ -1079,6 +1449,8 @@ def discover_all(
                 records.extend(common_crawl_expand_domain(domain, limit=100))
             except Exception as exc:  # noqa: BLE001
                 errors.append(f"dynamic:{domain}: {exc}")
+    records, rejected = filter_relevant_records(records, embedding_client=embedding_client, embedding_model=selected_embedding_model, profile_vectors=relevance_profile_vectors)
+    rejected_irrelevant += rejected
     records = deduplicate(records)
 
     discovered_path = root / "discovered_records.jsonl"
@@ -1086,7 +1458,8 @@ def discover_all(
 
     acquired: list[dict[str, Any]] = []
     if acquire:
-        for record in records:
+        for index, record in enumerate(records, 1):
+            _log(f"acquire {index}/{len(records)}: {record.title[:80]!r}")
             # Do not acquire discovery-only sitemap/Common Crawl rows until a current page is validated.
             if record.document_type == "DISCOVERY_RECORD" and record.metadata_only:
                 acquired.append(record.as_dict() | {"acquisition_status": "METADATA_ONLY"})
@@ -1101,10 +1474,22 @@ def discover_all(
     report = {
         "schema_version": "1.0",
         "paid_search_apis_used": False,
+        "relevance_embedding_model": selected_embedding_model,
         "queries": len(queries),
         "discovered_unique": len(records),
+        "relevant_candidates": len(records),
+        "rejected_irrelevant": rejected_irrelevant,
+        "oai_stats": {
+            "oai_seen": oai_seen,
+            "oai_relevant": oai_relevant,
+            "oai_rejected_irrelevant": oai_rejected_irrelevant,
+        },
         "dynamic_seeds": len(dynamic),
         "source_counts": dict(source_counts),
+        "disabled_sources": sorted(disabled_sources),
+        "provider_failures": dict(provider_failures),
+        "provider_health": {name: dict(values) for name, values in sorted(provider_health.items())},
+        "global_source_health": health_registry.data,
         "acquisition_counts": dict(acquisition_counts),
         "errors": errors,
         "discovered_records": str(discovered_path),
@@ -1114,4 +1499,5 @@ def discover_all(
     audit_dir = root / "audit"
     audit_dir.mkdir(parents=True, exist_ok=True)
     (audit_dir / "discovery_audit.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    _log(f"finished: catalog={catalog_path}")
     return report
