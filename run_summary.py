@@ -29,10 +29,10 @@ def write(output_dir: str | Path | None=None) -> dict[str,Any]:
     for row in rows:
         code=str(row.get("publisher_code") or "")
         if code in institutions:
-            institutions[code]["discovered"]+=1; institutions[code]["acquired"]+=int(bool(row.get("handoff_candidate")))
+            institutions[code]["discovered"]+=1; institutions[code]["acquired"]+=int(bool(row.get("handoff_candidate") or row.get("source_path")))
         if "PRESENTATION" in str(row.get("document_type") or ""):
             platform=str((row.get("presentation") or {}).get("platform") or row.get("discovery_source") or "INSTITUTIONAL")
-            presentations[platform]["discovered"]+=1; presentations[platform]["relevant"]+=int(str(row.get("relevance_status")) in {"STRONG","PROBABLE"}); presentations[platform]["acquired"]+=int(bool(row.get("handoff_candidate"))); presentations[platform]["metadata_only"]+=int(bool(row.get("metadata_only"))); presentations[platform]["original_source_resolved"]+=int(bool(row.get("original_source_resolved")))
+            presentations[platform]["discovered"]+=1; presentations[platform]["relevant"]+=int(str(row.get("relevance_status")) in {"STRONG","PROBABLE"}); presentations[platform]["acquired"]+=int(bool(row.get("handoff_candidate") or row.get("source_path"))); presentations[platform]["metadata_only"]+=int(bool(row.get("metadata_only"))); presentations[platform]["original_source_resolved"]+=int(bool(row.get("original_source_resolved")))
     for row in _rows(package/"00_registry"/"handoff_manifest.jsonl"):
         code=str(row.get("publisher_code") or "")
         if code in institutions: institutions[code]["handoff"]+=1
