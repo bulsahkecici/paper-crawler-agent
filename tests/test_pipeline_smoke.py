@@ -33,7 +33,8 @@ class ControlledPipelineSmokeTest(unittest.TestCase):
         report = classify_catalog.classify_catalog(root, use_local_ai=False)
         self.assertEqual(report["documents"], 2)
         self.assertTrue(report["reconciliation"]["invariant_ok"])
-        self.assertTrue(report["coverage"]["parent_aggregation"])
+        self.assertEqual(report["coverage"]["basis"], "book_agnostic_broad_topics")
+        self.assertTrue(report["coverage"]["informational_only"])
 
 
 if __name__ == "__main__":

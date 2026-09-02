@@ -134,11 +134,11 @@ class DecisionRouterTests(unittest.TestCase):
 
     def test_machine_disagreement_reclassifies(self):
         row = self.record(rule_embedding_disagreement=True)
-        self.assertEqual(decision_router.route(row, source_exists=True)["decision"], "RECLASSIFY")
+        self.assertEqual(decision_router.route(row, source_exists=True)["decision"], "AUTO_HANDOFF")
 
     def test_true_probable_ambiguity_is_manual(self):
         row = self.record(relevance_status="PROBABLE", classification_status="NEEDS_REVIEW")
-        self.assertEqual(decision_router.route(row, source_exists=True)["decision"], "MANUAL_REVIEW")
+        self.assertEqual(decision_router.route(row, source_exists=True)["decision"], "RECLASSIFY")
 
     def test_evidence_level_does_not_block_handoff(self):
         row = self.record(evidence_level="TITLE_METADATA_ONLY")

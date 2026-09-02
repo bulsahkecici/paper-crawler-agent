@@ -29,10 +29,7 @@ class FakeLlmClient:
     base_url = "http://127.0.0.1:1234/v1"
 
     def chat_json(self, model: str, system: str, user: str) -> dict:
-        payload = json.loads(user)
-        ids = [row["id"] for row in payload["candidate_sections"]]
-        selected = "4.3.5" if "4.3.5" in ids else ids[0]
-        return {"sections": [{"id": selected, "confidence": 0.95}], "reason": "Best allowed section."}
+        return {"relevance_status": "STRONG", "document_type": "JOURNAL_ARTICLE", "topics": ["life_cycle_cost", "maintenance_cost"], "confidence": 0.95, "reason": "Source-level review."}
 
 
 class CountingLlmClient(FakeLlmClient):
@@ -50,7 +47,7 @@ class HybridClassificationTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             hybrid.LocalOpenAIClient("https://api.example.com/v1")
 
-    def test_embedding_fusion_keeps_lcc_section(self) -> None:
+    def test_embedding_fusion_keeps_lcc_topic(self) -> None:
         record = {
             "title": "Life cycle cost analysis of road tunnels",
             "abstract": "Construction, operation and maintenance costs over the tunnel life cycle.",
@@ -61,11 +58,11 @@ class HybridClassificationTests(unittest.TestCase):
             embedding_client=FakeEmbeddingClient(),
             embedding_model="text-embedding-nomic-embed-text-v1.5",
         )
-        self.assertEqual(result["primary_section"], "4.3.5")
-        self.assertTrue(result["embedding_review"]["sections"])
-        self.assertIn("section_fusion", result["methods"])
+        self.assertIn("life_cycle_cost", result["topics"])
+        self.assertTrue(result["embedding_review"]["topics"])
+        self.assertIn("embedding", result["methods"])
 
-    def test_qwen_can_only_select_candidate_section(self) -> None:
+    def test_qwen_can_only_select_controlled_source_labels(self) -> None:
         record = {"title": "Ambiguous tunnel life cycle maintenance study", "source": "crossref"}
         result = hybrid.classify_hybrid(
             record,
@@ -74,9 +71,8 @@ class HybridClassificationTests(unittest.TestCase):
             llm_client=FakeLlmClient(),
             llm_model="qwen3.6-35b-a3b-mlx",
         )
-        valid_ids = {row["id"] for row in result["book_sections"]}
-        self.assertTrue(valid_ids)
-        self.assertIn(result["primary_section"], valid_ids)
+        self.assertNotIn("primary_section", result)
+        self.assertTrue(set(result["topics"]) <= set(hybrid.base.TOPIC_TERMS))
         if result["llm_review"].get("used"):
             self.assertEqual(result["classification_status"], "LLM_ACCEPTED")
 

@@ -71,7 +71,8 @@ class EvidenceSemanticsTests(unittest.TestCase):
         self.assertIn("ventilation", payload["classification_text"])
         self.assertEqual(payload["classification_input"], "LIGHT_PDF_FIRST_PAGES")
         self.assertEqual(payload["crawler_evidence_level"], "LIGHT_PDF_TEXT")
-        self.assertTrue(payload["primary_section"])  # classifier still had input
+        self.assertIn("ventilation", payload["topics"])
+        self.assertNotIn("primary_section", payload)
 
     def test_light_pdf_audit_has_no_full_text_metric(self) -> None:
         root = Path(tempfile.mkdtemp(prefix="light_pdf_boundary_"))
@@ -171,13 +172,12 @@ class HandoffContractTests(unittest.TestCase):
         self.assertIn("READY_FOR_HANDOFF", contract["semantic_rules"])
         self.assertIn("METADATA_REFERENCE", contract["semantic_rules"])
 
-    def test_manifest_exposes_provisional_and_null_final_sections(self) -> None:
+    def test_manifest_is_book_agnostic(self) -> None:
         manifest = [json.loads(l) for l in (self._export() / "00_registry" / "handoff_manifest.jsonl").read_text().splitlines() if l.strip()]
         row = manifest[0]
-        self.assertEqual(row["provisional_primary_section"], "5.7.2")
-        self.assertIn("5.7", row["provisional_secondary_sections"])
-        self.assertIsNone(row["final_primary_section"])
-        self.assertEqual(row["final_section_status"], "NOT_EVALUATED")
+        self.assertNotIn("provisional_primary_section", row)
+        self.assertNotIn("final_primary_section", row)
+        self.assertIn("topics", row)
         self.assertEqual(row["source_representation"]["crawler_normalized_status"], "PROVISIONAL")
         self.assertNotIn(row["crawler_evidence_level"], {"FULL_TEXT", "PDF_EXTRACT"})
 

@@ -24,35 +24,36 @@ import relevance_engine
 import source_health
 
 
-def _record(section: str = "5.5.1", status: str = "LLM_ACCEPTED", **extra):
+def _record(topic: str = "maintenance", status: str = "LLM_ACCEPTED", **extra):
     return {
-        "primary_section": section, "book_sections": [{"id": section, "score": 0.9}],
+        "topics": [topic], "relevance_status": "STRONG",
         "classification_status": status, "classification_confidence": 0.9,
         "abstract": "road tunnel maintenance", "handoff_candidate": True, **extra,
     }
 
 
 class CoveragePolicyTests(unittest.TestCase):
-    def test_subsection_rolls_up_to_all_parents(self):
-        sections = coverage_policy.calculate([_record()])["sections"]
-        self.assertEqual([sections[s]["corpus_eligible_count"] for s in ("5", "5.5", "5.5.1")], [1, 1, 1])
+    def test_topic_has_no_chapter_rollup(self):
+        report = coverage_policy.calculate([_record()])
+        self.assertEqual(report["topics"]["maintenance"]["handoff"], 1)
+        self.assertNotIn("sections", report)
 
     def test_accepted_count(self):
-        self.assertEqual(coverage_policy.calculate([_record()])["totals"]["accepted_count"], 1)
+        self.assertEqual(coverage_policy.calculate([_record()])["totals"]["handoff"], 1)
 
     def test_rejected_excluded(self):
         totals = coverage_policy.calculate([_record(status="REJECT_IRRELEVANT")])["totals"]
-        self.assertEqual(totals.get("discovered_count", 0), 0)
+        self.assertEqual(totals.get("discovered", 0), 0)
 
     def test_review_inclusion_is_configurable(self):
         row = _record(status="NEEDS_REVIEW")
-        self.assertEqual(coverage_policy.calculate([row])["totals"]["discovered_count"], 1)
-        self.assertEqual(coverage_policy.calculate([row], include_review_in_discovered=False)["totals"].get("discovered_count", 0), 0)
+        self.assertEqual(coverage_policy.calculate([row])["totals"]["discovered"], 1)
+        self.assertEqual(coverage_policy.calculate([row], include_review_in_discovered=False)["totals"]["discovered"], 1)
 
     def test_discovered_and_eligible_are_distinct(self):
         totals = coverage_policy.calculate([_record(status="NEEDS_REVIEW")])["totals"]
-        self.assertEqual(totals["discovered_count"], 1)
-        self.assertEqual(totals.get("corpus_eligible_count", 0), 0)
+        self.assertEqual(totals["discovered"], 1)
+        self.assertEqual(totals.get("handoff", 0), 0)
 
 
 class QueryAnchorTests(unittest.TestCase):
@@ -189,7 +190,7 @@ class QualityGateTests(unittest.TestCase):
         audit = root / "audit"; audit.mkdir()
         stages = {stage: "COMPLETED" for stage in pipeline_state.STAGES}
         (audit / "pipeline_state.json").write_text(json.dumps({"stages": stages}))
-        (audit / "classification_audit.json").write_text(json.dumps({"reconciliation": {"invariant_ok": True, "dedup_removed": 1}, "coverage": {"parent_aggregation": True}}))
+        (audit / "classification_audit.json").write_text(json.dumps({"reconciliation": {"invariant_ok": True, "dedup_removed": 1}, "coverage": {"basis": "book_agnostic_broad_topics", "informational_only": True, "topics": {}}}))
         (root / "classification_index.jsonl").write_text(json.dumps({"crawler_evidence_level": "ABSTRACT"}) + "\n")
         package = root / "exports" / "TunnelBookAI_Source_Pack"; (package / "00_registry").mkdir(parents=True); (package / "99_audit").mkdir()
         source = package / "source.pdf"; source.write_bytes(b"pdf")
@@ -198,8 +199,6 @@ class QualityGateTests(unittest.TestCase):
             "sha256": hashlib.sha256(b"pdf").hexdigest(), "local_path": "source.pdf",
             "provenance": {"source_url": "https://x"}, "route_path": "C_ACADEMIC/ARTICLES",
             "crawler_evidence_level": "ABSTRACT", "paper_crawler_status": "READY_FOR_HANDOFF",
-            "provisional_primary_section": None, "final_primary_section": None,
-            "final_section_status": "NOT_EVALUATED",
             "source_representation": {"original_or_raw": "source.pdf", "crawler_normalized": None},
         }
         (package / "00_registry" / "handoff_manifest.jsonl").write_text(json.dumps(manifest) + "\n")

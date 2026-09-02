@@ -20,9 +20,9 @@ class ClassificationTests(unittest.TestCase):
         self.assertEqual(result.document_type, "JOURNAL_ARTICLE")
         self.assertEqual(result.source_class, "ACADEMIC")
         self.assertEqual(result.authority_tier, "B2")
-        self.assertEqual(result.route_path, "C_ACADEMIC/ARTICLES")
+        self.assertEqual(result.route_path, "C_ACADEMIC")
         self.assertIn("life_cycle_cost", result.topics)
-        self.assertIn("4.3.5", [row["id"] for row in result.book_sections])
+        self.assertFalse(hasattr(result, "book_sections"))
 
     def test_kgm_standard_gets_official_priority_and_route(self) -> None:
         record = {
@@ -31,12 +31,12 @@ class ClassificationTests(unittest.TestCase):
             "publisher": "Karayolları Genel Müdürlüğü",
         }
         result = classifier.classify_record(record)
-        self.assertEqual(result.document_type, "TECHNICAL_STANDARD")
+        self.assertEqual(result.document_type, "TECHNICAL_SPECIFICATION")
         self.assertEqual(result.source_class, "TR_OFFICIAL")
         self.assertEqual(result.publisher_code, "KGM")
         self.assertEqual(result.authority_tier, "A1")
         self.assertEqual(result.evidence_priority, 100)
-        self.assertEqual(result.route_path, "A_OFFICIAL/TR/KGM/TECHNICAL_STANDARDS")
+        self.assertEqual(result.route_path, "A_OFFICIAL")
 
     def test_kgm_news_is_news_but_official(self) -> None:
         record = {
@@ -48,7 +48,7 @@ class ClassificationTests(unittest.TestCase):
         self.assertEqual(result.document_type, "NEWS")
         self.assertEqual(result.source_class, "TR_OFFICIAL")
         self.assertEqual(result.authority_tier, "A1")
-        self.assertEqual(result.route_path, "A_OFFICIAL/TR/KGM/NEWS")
+        self.assertEqual(result.route_path, "A_OFFICIAL")
 
     def test_arxiv_is_preprint(self) -> None:
         record = {
@@ -60,8 +60,8 @@ class ClassificationTests(unittest.TestCase):
         result = classifier.classify_record(record)
         self.assertEqual(result.document_type, "PREPRINT")
         self.assertEqual(result.source_class, "ACADEMIC")
-        self.assertEqual(result.authority_tier, "D1")
-        self.assertEqual(result.route_path, "C_ACADEMIC/PREPRINTS")
+        self.assertEqual(result.authority_tier, "G")
+        self.assertEqual(result.route_path, "C_ACADEMIC")
 
     def test_thesis_metadata_beats_generic_rules(self) -> None:
         record = {
@@ -72,7 +72,7 @@ class ClassificationTests(unittest.TestCase):
         result = classifier.classify_record(record)
         self.assertEqual(result.document_type, "THESIS_PHD")
         self.assertEqual(result.authority_tier, "C1")
-        self.assertEqual(result.route_path, "C_ACADEMIC/THESES/PHD")
+        self.assertEqual(result.route_path, "C_ACADEMIC")
         self.assertIn("geotechnics", result.topics)
         self.assertIn("NATM", result.topics)
 
@@ -80,7 +80,7 @@ class ClassificationTests(unittest.TestCase):
         record = {"title": "A document with no useful tunnel metadata"}
         result = classifier.classify_record(record)
         self.assertEqual(result.document_type, "UNKNOWN")
-        self.assertEqual(result.classification_status, "NEEDS_REVIEW")
+        self.assertEqual(result.classification_status, "LOCAL_LLM_REVIEW")
         self.assertEqual(result.route_path, "90_STAGING/NEEDS_CLASSIFICATION")
 
     def test_energy_paper_maps_to_energy_section(self) -> None:
@@ -90,10 +90,9 @@ class ClassificationTests(unittest.TestCase):
             "source": "openalex",
         }
         result = classifier.classify_record(record)
-        ids = [row["id"] for row in result.book_sections]
-        self.assertIn("5.7.2", ids)
         self.assertIn("energy", result.topics)
         self.assertIn("ventilation", result.topics)
+        self.assertNotIn("primary_section", result.as_dict())
 
 
 if __name__ == "__main__":
