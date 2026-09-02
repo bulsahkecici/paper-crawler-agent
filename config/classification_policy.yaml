@@ -69,7 +69,8 @@ handoff:
     - ABSTRACT
     - WEBPAGE_TEXT
   min_classification_confidence: 0.72
-  require_primary_section: true
+  require_primary_section: false
+  chapter_fields_deprecated: true
   require_existing_source: true
   require_sha256: true
   copy_mode: hardlink_then_copy

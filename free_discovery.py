@@ -155,9 +155,21 @@ def _config() -> dict[str, Any]:
         raise ValueError("discovery_sources.yaml must contain a mapping")
     return payload
 
+def institutional_sources() -> dict[str, Any]:
+    """Merge legacy adapter details with the global identity registry."""
+    sources = dict(_config().get("institutional_sources") or {})
+    registry = yaml.safe_load((CONFIG_DIR / "institutional_sources.yaml").read_text(encoding="utf-8")) or {}
+    tier_scores = {"A1":100,"A2":95,"A3":90,"A4":88,"D1":75,"C1":70}
+    for item in registry.get("institutions") or []:
+        key = str(item.get("id") or "").strip()
+        if not key: continue
+        current = dict(sources.get(key) or {})
+        sources[key] = {**item, **current, "publisher":item.get("name"), "authority_score":tier_scores.get(str(item.get("authority_tier")),60), "sitemap_probe":"sitemap" in (item.get("discovery_methods") or []), "common_crawl_expand":False}
+    return sources
 
-def _taxonomy() -> dict[str, Any]:
-    with (CONFIG_DIR / "taxonomy.yaml").open("r", encoding="utf-8") as handle:
+
+def _topic_queries() -> dict[str, Any]:
+    with (CONFIG_DIR / "topic_queries.yaml").open("r", encoding="utf-8") as handle:
         payload = yaml.safe_load(handle) or {}
     return payload if isinstance(payload, dict) else {}
 
@@ -409,8 +421,8 @@ def html_to_markdown(title: str, text: str, source_url: str) -> str:
     ])
 
 
-def taxonomy_queries(max_queries: int | None = None) -> list[str]:
-    """Build bilingual chapter-aware queries directly from the book taxonomy."""
+def topic_queries(max_queries: int | None = None, request_path: str | Path | None = None) -> list[str]:
+    """Build multilingual, book-agnostic tunnel-engineering queries."""
     queries: list[str] = []
     seen: set[str] = set()
     for q in [*harvest.SEARCH_QUERIES, *harvest.FILL_QUERIES]:
@@ -418,14 +430,23 @@ def taxonomy_queries(max_queries: int | None = None) -> list[str]:
         if key not in seen:
             seen.add(key)
             queries.append(q)
-    for _, cfg in (_taxonomy().get("sections") or {}).items():
-        for term in [*(cfg.get("strong_terms") or [])[:2], *(cfg.get("medium_terms") or [])[:1]]:
-            q = str(term).strip()
-            if len(q) < 4 or q.lower() in seen:
-                continue
-            seen.add(q.lower())
-            queries.append(qualify_tunnel_query(q))
+    for terms in (_topic_queries().get("queries") or {}).values():
+        for term in terms or []:
+            q = qualify_tunnel_query(str(term))
+            if len(q) >= 4 and q.casefold() not in seen:
+                seen.add(q.casefold()); queries.append(q)
+    if request_path:
+        payload = json.loads(Path(request_path).read_text(encoding="utf-8"))
+        if not str(payload.get("schema_version") or "").startswith("1.") or not payload.get("request_id"):
+            raise ValueError("invalid TunnelBookAI discovery request")
+        for term in [*(payload.get("queries") or []), *(payload.get("topics") or [])]:
+            q = qualify_tunnel_query(str(term).replace("_", " "))
+            if q.casefold() not in seen: seen.add(q.casefold()); queries.append(q)
     return queries[:max_queries] if max_queries else queries
+
+def taxonomy_queries(max_queries: int | None = None) -> list[str]:
+    """Deprecated compatibility alias; no taxonomy is loaded."""
+    return topic_queries(max_queries=max_queries)
 
 
 def qualify_tunnel_query(query: str) -> str:
@@ -1047,7 +1068,7 @@ def common_crawl_expand_domain(domain: str, *, terms: Iterable[str] | None = Non
 
 def _known_domain_policy() -> dict[str, tuple[int, str, str]]:
     mapping: dict[str, tuple[int, str, str]] = {}
-    for name, cfg in (_config().get("institutional_sources") or {}).items():
+    for name, cfg in institutional_sources().items():
         for domain in cfg.get("domains") or []:
             mapping[str(domain).lower()] = (
                 int(cfg.get("authority_score") or 0),
@@ -1344,7 +1365,7 @@ def discover_all(
     root = harvest.OUTPUT_DIR
     discovery_root = root / "discovery_sources"
     discovery_root.mkdir(parents=True, exist_ok=True)
-    queries = taxonomy_queries(max_queries=max_queries)
+    queries = topic_queries(max_queries=max_queries)
     records: list[DiscoveryRecord] = []
     errors: list[str] = []
     source_counts: Counter[str] = Counter()
@@ -1387,7 +1408,7 @@ def discover_all(
         time.sleep(0.08)
 
     # Curated institutions use their own seeds/search/sitemaps.
-    institutional = _config().get("institutional_sources") or {}
+    institutional = institutional_sources()
     for name, cfg in institutional.items():
         if not cfg.get("enabled", False) or (cfg.get("metadata_only") and not cfg.get("seed_urls")):
             continue
@@ -1429,6 +1450,9 @@ def discover_all(
 
     dynamic = promote_dynamic_seeds(records)
     (root / "dynamic_seeds.json").write_text(json.dumps(dynamic, ensure_ascii=False, indent=2), encoding="utf-8")
+    candidates_path = root / "audit" / "institution_candidates.jsonl"
+    candidates_path.parent.mkdir(parents=True, exist_ok=True)
+    _write_jsonl(candidates_path, ({**seed, "status": "CANDIDATE_UNVERIFIED", "auto_promoted_to_high_authority": False} for seed in dynamic))
 
     # Expand newly found trusted domains conservatively. Common Crawl supplies URLs only.
     if expand_dynamic:

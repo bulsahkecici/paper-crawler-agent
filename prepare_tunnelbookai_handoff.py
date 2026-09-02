@@ -223,7 +223,7 @@ def main() -> None:
         "final_classification": {
             "documents": final_classification.get("documents"),
             "status_counts": final_classification.get("status_counts"),
-            "section_coverage": final_classification.get("section_coverage"),
+            "topic_coverage": final_classification.get("topic_coverage"),
         },
         "source_dedup_version_audit": {
             "documents": source_audit.get("documents"),

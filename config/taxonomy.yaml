@@ -1,4 +1,6 @@
 version: 1
+deprecated: true
+deprecated_reason: "Historical book taxonomy; PaperCrawler core must not load this file. Retained for audit compatibility only."
 book: TunnelBookAI
 sections:
   "1.1":

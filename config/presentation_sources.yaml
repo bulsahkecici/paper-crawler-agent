@@ -1,0 +1,14 @@
+schema_version: "1.0"
+platforms:
+  slideshare: {domains: [slideshare.net], source_class: PRESENTATION_PLATFORM, enabled: true, acquisition: public_only}
+  speaker_deck: {domains: [speakerdeck.com], source_class: PRESENTATION_PLATFORM, enabled: true, acquisition: public_only}
+  slideserve: {domains: [slideserve.com], source_class: PRESENTATION_PLATFORM, enabled: true, acquisition: metadata_first}
+  zenodo: {domains: [zenodo.org], source_class: RESEARCH_REPOSITORY, enabled: true, acquisition: public_files}
+  figshare: {domains: [figshare.com], source_class: RESEARCH_REPOSITORY, enabled: true, acquisition: public_files}
+  researchgate: {domains: [researchgate.net], source_class: RESEARCH_REPOSITORY, enabled: true, acquisition: metadata_only_unless_public}
+policy:
+  platform_is_never_producer: true
+  prefer_original_institutional_source: true
+  bypass_login: false
+  bypass_paywall: false
+  bypass_download_controls: false

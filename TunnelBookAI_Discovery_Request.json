@@ -1,0 +1,7 @@
+{
+  "schema_version": "1.0",
+  "request_id": "TB_REQ_TEMPLATE",
+  "topics": ["life_cycle_cost", "electromechanical_maintenance"],
+  "preferred_sources": ["OFFICIAL", "ROAD_AUTHORITY", "ACADEMIC"],
+  "queries": ["road tunnel life cycle cost", "tunnel electromechanical maintenance cost"]
+}

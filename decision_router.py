@@ -19,7 +19,7 @@ AUTO_REJECT = "AUTO_REJECT"
 MANUAL_REVIEW = "MANUAL_REVIEW"
 METADATA_REFERENCE = "METADATA_REFERENCE"
 
-OFFICIAL_SOURCE_CLASSES = {"TR_OFFICIAL", "INT_OFFICIAL", "STANDARD_BODY"}
+OFFICIAL_SOURCE_CLASSES = {"TR_OFFICIAL", "INT_OFFICIAL", "FOREIGN_GOVERNMENT", "ROAD_AUTHORITY", "TRANSPORT_AUTHORITY", "INTERNATIONAL_OFFICIAL", "STANDARD_BODY"}
 
 ACCEPTED_CLASSIFICATIONS = {"AUTO_ACCEPT", "ACCEPT_WITH_AUDIT", "LLM_ACCEPTED"}
 REVIEW_CLASSIFICATIONS = {"NEEDS_REVIEW", "LOCAL_LLM_REVIEW"}
@@ -96,7 +96,7 @@ def route(record: dict[str, Any], *, source_exists: bool | None = None, sha_vali
         return _decision(AUTO_REJECT, "hard_acquisition_or_security_failure", "retain failure details; do not retry automatically")
     if relevance in {"", "WEAK"}:
         if record.get("rule_embedding_disagreement") or record.get("relevance_conflict"):
-            return _decision(RECLASSIFY, "relevance_classifier_conflict", "recompute deterministic relevance and taxonomy mapping")
+            return _decision(RECLASSIFY, "relevance_classifier_conflict", "recompute source-level relevance")
         return _decision(AUTO_REJECT, "insufficient_tunnel_relevance", "retain metadata in rejected manifest")
     if not exists:
         # Try to actually acquire the source before falling back to a reference:
@@ -113,20 +113,23 @@ def route(record: dict[str, Any], *, source_exists: bool | None = None, sha_vali
         if relevance in {"STRONG", "PROBABLE"}:
             return _decision(RETRY_ACQUISITION, "source_missing", "retry bounded acquisition or official-page snapshot")
         return _decision(AUTO_REJECT, "source_missing_and_not_relevant", "retain metadata in rejected manifest")
-    if not record.get("primary_section"):
-        return _decision(RECLASSIFY, "primary_section_missing", "rerun rules and embedding classification")
-    if record.get("rule_embedding_disagreement") and status != "LLM_ACCEPTED":
-        return _decision(RECLASSIFY, "rule_embedding_disagreement", "rerun ambiguity arbitration")
     if status in REVIEW_CLASSIFICATIONS:
-        if relevance == "STRONG":
-            return _decision(RECLASSIFY, "clear_tunnel_source_needs_taxonomy_resolution", "rerun deterministic classification; use local Qwen only if still ambiguous")
-        return _decision(MANUAL_REVIEW, "unresolved_probable_classification", "human relevance and section judgment")
+        ambiguous = (
+            document_type == "unknown"
+            or str(record.get("source_class") or "UNKNOWN").upper() == "UNKNOWN"
+            or not str(record.get("authority_tier") or "").strip()
+            or relevance in {"", "WEAK"}
+            or record.get("relevance_conflict")
+        )
+        if ambiguous:
+            return _decision(RECLASSIFY, "source_classification_ambiguous", "review relevance, document type, source identity, or authority")
+        return _decision(MANUAL_REVIEW, "unresolved_source_classification", "human source-level classification review")
     if status not in ACCEPTED_CLASSIFICATIONS:
         return _decision(MANUAL_REVIEW, "unknown_classification_status", "inspect unusual classification metadata")
     if document_type == "unknown":
-        return _decision(MANUAL_REVIEW, "document_type_unresolved", "identify unusual document type or authority")
+        return _decision(RECLASSIFY, "document_type_unresolved", "identify unusual document type")
     if relevance == "PROBABLE" and confidence < 0.72:
-        return _decision(MANUAL_REVIEW, "probable_low_confidence", "human relevance and section judgment")
+        return _decision(RECLASSIFY, "probable_low_confidence", "review tunnel relevance and source-level labels")
     return _decision(AUTO_HANDOFF, "handoff_requirements_satisfied", "send to TunnelBookAI for final evidence evaluation")
 
 
@@ -135,7 +138,6 @@ def _decision(decision: str, reason: str, action: str) -> dict[str, str]:
 
 
 def queue_entry(record: dict[str, Any], routed: dict[str, str]) -> dict[str, Any]:
-    sections = record.get("book_sections") or []
     return {
         "document_id": record.get("document_key") or record.get("canonical_id") or record.get("doi") or record.get("source_sha256"),
         "title": record.get("title"),
@@ -150,8 +152,8 @@ def queue_entry(record: dict[str, Any], routed: dict[str, str]) -> dict[str, Any
         "authority_tier": record.get("authority_tier"),
         "relevance_score": record.get("tunnel_relevance_score", record.get("relevance_score")),
         "relevance_status": record.get("relevance_status"),
-        "primary_section": record.get("primary_section"),
-        "book_sections": sections,
+        "topics": record.get("topics") or [],
+        "producer": record.get("producer") or {},
         "classification_status": record.get("classification_status"),
         "acquisition_status": record.get("acquisition_status"),
         "decision": routed["decision"],

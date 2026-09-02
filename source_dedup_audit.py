@@ -135,6 +135,13 @@ def audit(output_dir: str | Path | None = None) -> dict[str, Any]:
         for idx in group:
             canonical[idx] = "PRIMARY" if idx == best else "ALTERNATE_SOURCE"
 
+    version_groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        edition = row.get("edition") or row.get("version")
+        work_id = row.get("work_id")
+        if work_id and edition:
+            version_groups[str(work_id)].append({"document_key": row.get("document_key"), "edition": edition, "publication_date": row.get("publication_date"), "supersedes": row.get("supersedes"), "is_current": row.get("is_current")})
+
     result = {
         "schema_version": "1.1",
         "documents": len(rows),
@@ -147,6 +154,8 @@ def audit(output_dir: str | Path | None = None) -> dict[str, Any]:
         "canonical_url_groups_detail": canonical_urls,
         "fuzzy_candidates": fuzzy,
         "canonical_roles": {str(k): v for k, v in canonical.items()},
+        "version_groups": {key: value for key, value in version_groups.items() if len(value) > 1},
+        "version_rule": "Different evidenced editions are retained; supersession is never inferred.",
         "policy": policy,
         "note": "Fuzzy title/author/year candidates are never auto-merged.",
     }

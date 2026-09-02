@@ -97,8 +97,8 @@ def _write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
 QUEUE_COLUMNS = [
     "document_id", "title", "source_path", "source_sha256", "discovery_source",
     "source_url", "landing_url", "pdf_url", "document_type", "source_class",
-    "authority_tier", "relevance_score", "relevance_status", "primary_section",
-    "book_sections", "classification_status", "acquisition_status", "decision",
+    "authority_tier", "relevance_score", "relevance_status", "topics",
+    "classification_status", "acquisition_status", "decision",
     "reason", "recommended_action",
 ]
 
@@ -110,10 +110,7 @@ def _write_csv(path: Path, rows: list[dict[str, Any]], sort_key: Any) -> None:
         writer.writeheader()
         for row in sorted(rows, key=sort_key):
             item = dict(row)
-            item["book_sections"] = ";".join(
-                str(section.get("id") if isinstance(section, dict) else section)
-                for section in (row.get("book_sections") or [])
-            )
+            item["topics"] = ";".join(str(topic) for topic in row.get("topics") or [])
             writer.writerow(item)
 
 
@@ -218,12 +215,6 @@ def export_handoff(
                         "copy_mode": raw_mode,
                     })
 
-        primary_section = row.get("primary_section")
-        secondary_sections = [
-            str(s.get("id") if isinstance(s, dict) else s)
-            for s in (row.get("book_sections") or [])
-            if (s.get("id") if isinstance(s, dict) else s) and (s.get("id") if isinstance(s, dict) else s) != primary_section
-        ]
         raw_dest_rel = next((a["path"] for a in extra_assets if a.get("kind") == "raw_html_snapshot"), None)
         source_representation = {
             "original_or_raw": raw_dest_rel or str(source_dest.relative_to(package_root)),
@@ -235,22 +226,17 @@ def export_handoff(
             "provisional_document_type": row.get("normalized_document_type") or row.get("document_type"),
             "provisional_source_tier": row.get("source_tier"),
             "provisional_authority_tier": row.get("authority_tier"),
-            "provisional_primary_section": primary_section,
-            "provisional_secondary_sections": secondary_sections,
-            "provisional_section_confidence": row.get("classification_confidence"),
             "provisional_classification_status": status,
             "final_document_type": None,
             "final_source_tier": None,
-            "final_primary_section": None,
-            "final_secondary_sections": [],
-            "final_section_status": "NOT_EVALUATED",
             "final_evidence_status": "NOT_EVALUATED",
         }
 
         classification_payload = dict(row)
         classification_payload.update({
             "document_id": document_id,
-            "producer": "paper-crawler-agent",
+            "producer_system": "paper-crawler-agent",
+            "producer": row.get("producer") or {},
             "source_kind": "EXTERNAL_DISCOVERY",
             "paper_crawler_status": "READY_FOR_HANDOFF",
             "tunnelbookai_status": "NOT_INGESTED",
@@ -270,7 +256,8 @@ def export_handoff(
             "document_id": document_id,
             "canonical_id": row.get("canonical_id") or "CAN_" + document_id.removeprefix("PC_"),
             "canonical_hint_id": row.get("canonical_id") or "CAN_" + document_id.removeprefix("PC_"),
-            "producer": "paper-crawler-agent",
+            "producer_system": "paper-crawler-agent",
+            "producer": row.get("producer") or {},
             "source_kind": "EXTERNAL_DISCOVERY",
             "title": row.get("title"),
             "authors": row.get("authors") or [],
@@ -285,9 +272,10 @@ def export_handoff(
             "source_class": row.get("source_class"),
             "authority_tier": row.get("authority_tier"),
             "evidence_priority": row.get("evidence_priority"),
-            "primary_section": primary_section,
-            "book_sections": row.get("book_sections") or [],
+            "publisher_code": row.get("publisher_code"),
             "topics": row.get("topics") or [],
+            "producer_identity": row.get("producer") or {},
+            "legacy": row.get("legacy") or {},
             "classification_confidence": row.get("classification_confidence"),
             "classification_status": status,
             "route_path": str(route),
@@ -337,7 +325,8 @@ def export_handoff(
             "document_id": row.get("document_id"),
             "canonical_id": canonical_hint,
             "canonical_hint_id": canonical_hint,
-            "producer": "paper-crawler-agent",
+            "producer_system": "paper-crawler-agent",
+            "producer": row.get("producer_identity") or {},
             "source_kind": "EXTERNAL_DISCOVERY",
             "title": row.get("title"), "authors": row.get("authors") or [], "year": row.get("year"),
             "doi": row.get("doi"), "source_url": row.get("source_url"),
@@ -345,6 +334,7 @@ def export_handoff(
             "resolved_url": row.get("pdf_url") or row.get("landing_url") or row.get("source_url"),
             "local_path": row.get("source_path"), "sha256": row.get("source_sha256"),
             "source_name": row.get("discovery_source"),
+            "publisher_code": row.get("publisher_code"),
             "route_path": row.get("route_path"),
             "crawler_evidence_level": row.get("crawler_evidence_level"),
             "evidence_level": row.get("evidence_level"),
@@ -353,16 +343,17 @@ def export_handoff(
             "provisional_document_type": row.get("provisional_document_type"),
             "provisional_source_tier": row.get("provisional_source_tier"),
             "provisional_authority_tier": row.get("provisional_authority_tier") or row.get("authority_tier"),
-            "provisional_primary_section": row.get("provisional_primary_section"),
-            "provisional_secondary_sections": row.get("provisional_secondary_sections") or [],
-            "provisional_section_confidence": row.get("provisional_section_confidence"),
             "provisional_classification_status": row.get("provisional_classification_status"),
             "final_document_type": None,
             "final_source_tier": None,
-            "final_primary_section": None,
-            "final_secondary_sections": [],
-            "final_section_status": "NOT_EVALUATED",
             "final_evidence_status": "NOT_EVALUATED",
+            "document_type": row.get("document_type"),
+            "source_class": row.get("source_class"),
+            "authority_tier": row.get("authority_tier"),
+            "relevance": {"status": row.get("relevance_status"), "score": row.get("tunnel_relevance_score", row.get("relevance_score"))},
+            "topics": row.get("topics") or [],
+            "producer_identity": row.get("producer_identity") or {},
+            "acquisition": {"status": row.get("acquisition_status"), "source_path": row.get("source_path"), "source_sha256": row.get("source_sha256")},
             "handoff_status": "READY_FOR_HANDOFF",
             "paper_crawler_status": "READY_FOR_HANDOFF",
             "tunnelbookai_status": "NOT_INGESTED",
@@ -423,7 +414,7 @@ def export_handoff(
     )
     csv_root = source_root / "audit"
     _write_csv(csv_root / "review_queue.csv", review_queue, lambda row: (
-        str(row.get("reason") or ""), str(row.get("primary_section") or ""),
+        str(row.get("reason") or ""), ";".join(row.get("topics") or []),
         str(row.get("relevance_status") or ""), str(row.get("title") or "").casefold(),
     ))
     _write_csv(csv_root / "retry_acquisition.csv", retry_queue, lambda row: (
@@ -431,7 +422,7 @@ def export_handoff(
         str(row.get("title") or "").casefold(),
     ))
     _write_csv(csv_root / "reclassify_queue.csv", reclassify_queue, lambda row: (
-        str(row.get("reason") or ""), str(row.get("primary_section") or ""),
+        str(row.get("reason") or ""), ";".join(row.get("topics") or []),
         str(row.get("title") or "").casefold(),
     ))
     _write_csv(csv_root / "rejected_manifest.csv", rejected, lambda row: (
@@ -449,8 +440,8 @@ def export_handoff(
                 "source metadata preservation",
                 "bibliographic dedup",
                 "provisional relevance",
-                "provisional classification (document type, source tier, section hints)",
-                "provisional coverage and gap discovery",
+                "source classification (relevance, document type, producer, authority and broad topics)",
+                "broad-topic discovery diversity",
                 "provenance",
             ],
             "consumer_responsibilities": [
@@ -472,9 +463,9 @@ def export_handoff(
                 "METADATA_REFERENCE": "Reference metadata without ingestable source content; excluded from READY_FOR_HANDOFF. TunnelBookAI may treat it as REFERENCE_ONLY or an acquisition-retry lead.",
                 "LIGHT_PDF_TEXT": "Partial first-pages text used only for provisional classification; not full-text evidence.",
                 "crawler_evidence_level": "PaperCrawler evidence vocabulary (ABSTRACT, LIGHT_PDF_TEXT, WEB_SNAPSHOT_TEXT, TITLE_METADATA_ONLY, ORIGINAL_ACQUIRED). Never FULL_TEXT or PDF_EXTRACT.",
-                "provisional_primary_section": "Discovery-time section hint. TunnelBookAI must reclassify full normalized content before corpus ingest.",
+                "topics": "Stable broad source-level hints; never book chapter placement.",
                 "source_representation": "original_or_raw is the authoritative captured source; crawler_normalized is PROVISIONAL and never the final corpus Markdown.",
-                "final_*": "All final_* fields (final_primary_section, final_section_status, final_evidence_status, ...) are owned by TunnelBookAI and are NOT_EVALUATED at handoff.",
+                "legacy": "Deprecated historical book-section fields, preserved for audit and ignored by all decisions.",
             },
             "state_machine": {
                 "paper_crawler_status": ["READY_FOR_HANDOFF", "METADATA_REFERENCE", "RETRY_ACQUISITION", "MANUAL_REVIEW", "AUTO_REJECT"],

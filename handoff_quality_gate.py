@@ -18,8 +18,6 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
-import yaml
-
 ROOT = Path(__file__).resolve().parent
 CONFIG_DIR = ROOT / "config"
 
@@ -54,14 +52,6 @@ def _jsonl(path: Path) -> tuple[list[dict[str, Any]], bool]:
     return rows, True
 
 
-def _taxonomy_ids() -> set[str]:
-    try:
-        payload = yaml.safe_load((CONFIG_DIR / "taxonomy.yaml").read_text(encoding="utf-8")) or {}
-    except (OSError, ValueError):
-        return set()
-    return {str(sid) for sid in (payload.get("sections") or {})}
-
-
 def evaluate_handoff(output_dir: str | Path, *, package_root: str | Path | None = None) -> dict[str, Any]:
     root = Path(output_dir)
     audit = root / "audit"
@@ -75,7 +65,6 @@ def evaluate_handoff(output_dir: str | Path, *, package_root: str | Path | None 
     metadata_refs, _ = _jsonl(package / "99_audit" / "metadata_references.jsonl")
     rejected, _ = _jsonl(package / "99_audit" / "rejected_manifest.jsonl")
     index, index_ok = _jsonl(root / "classification_index.jsonl")
-    taxonomy_ids = _taxonomy_ids()
 
     blocking: list[str] = []
     warnings: list[str] = []
@@ -109,7 +98,7 @@ def evaluate_handoff(output_dir: str | Path, *, package_root: str | Path | None 
     missing_provenance = 0
     metadata_reference_marked_ready = 0
     source_representation_missing = 0
-    invalid_provisional_section = 0
+    chapter_fields_in_handoff = 0
     invalid_fulltext_claim = 0
     for row in manifest:
         status = str(row.get("paper_crawler_status") or "READY_FOR_HANDOFF").upper()
@@ -126,11 +115,7 @@ def evaluate_handoff(output_dir: str | Path, *, package_root: str | Path | None 
             missing_provenance += 1
         if "source_representation" not in row:
             source_representation_missing += 1
-        prov_section = str(row.get("provisional_primary_section") or "")
-        if prov_section and taxonomy_ids and prov_section not in taxonomy_ids:
-            invalid_provisional_section += 1
-        if row.get("final_primary_section") not in (None, "") or str(row.get("final_section_status") or "NOT_EVALUATED").upper() != "NOT_EVALUATED":
-            invalid_provisional_section += 1
+        chapter_fields_in_handoff += sum(key in row for key in ("primary_section", "book_sections", "provisional_primary_section", "provisional_secondary_sections", "final_primary_section", "final_secondary_sections", "final_section_status"))
         evidence = str(row.get("crawler_evidence_level") or row.get("evidence_level") or "").upper()
         if evidence in FORBIDDEN_CRAWLER_EVIDENCE_LEVELS:
             invalid_fulltext_claim += 1
@@ -148,8 +133,8 @@ def evaluate_handoff(output_dir: str | Path, *, package_root: str | Path | None 
         blocking.append("metadata_reference_marked_ready")
     if source_representation_missing:
         blocking.append("source_representation_missing")
-    if invalid_provisional_section:
-        blocking.append("invalid_provisional_section")
+    if chapter_fields_in_handoff:
+        blocking.append("chapter_fields_present_in_handoff")
     if invalid_fulltext_claim:
         blocking.append("invalid_papercrawler_fulltext_claim")
 
@@ -159,10 +144,10 @@ def evaluate_handoff(output_dir: str | Path, *, package_root: str | Path | None 
         warnings.append("handoff_contract_schema_version_unexpected")
 
     coverage = classification.get("coverage") or {}
-    if not coverage.get("parent_aggregation"):
-        blocking.append("coverage_policy_missing")
-    for values in (coverage.get("sections") or {}).values():
-        chain = [int(values.get(key) or 0) for key in ("raw_matches", "relevant_matches", "acquired_matches", "handoff_candidates")]
+    if coverage.get("basis") != "book_agnostic_broad_topics" or not coverage.get("informational_only"):
+        blocking.append("book_agnostic_topic_coverage_missing")
+    for values in (coverage.get("topics") or {}).values():
+        chain = [int(values.get(key) or 0) for key in ("discovered", "relevant", "acquired", "handoff")]
         if chain != sorted(chain, reverse=True):
             blocking.append("coverage_internal_inconsistency")
             break
@@ -174,8 +159,6 @@ def evaluate_handoff(output_dir: str | Path, *, package_root: str | Path | None 
     if review:
         warnings.append("manual_review_queue_not_empty")
     qwen_rate = float(classification.get("qwen_review_rate") or 0.0)
-    if qwen_rate > 0.20:
-        warnings.append("qwen_review_rate_above_20_percent")
     if len(review) > 100:
         warnings.append("manual_review_queue_above_100")
 

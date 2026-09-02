@@ -1,78 +1,30 @@
 #!/usr/bin/env python3
-"""Coverage accounting by discovery, relevance, acquisition and handoff state."""
-
+"""Informational broad-topic coverage; never a product acceptance threshold."""
 from __future__ import annotations
-
 from collections import Counter, defaultdict
 from typing import Any, Iterable
-
 import corpus_policy
 
-AUTHORITY_WEIGHTS = {
-    "A1": 1.0, "A2": 0.95, "A3": 0.90,
-    "B1": 0.85, "B2": 0.80, "C1": 0.65, "C2": 0.55,
-}
+AUTHORITY_WEIGHTS = {"A1":1.0,"A2":.95,"A3":.90,"A4":.88,"B1":.85,"B2":.80,"C1":.65,"C2":.55,"D1":.70,"D2":.55,"D3":.50,"E1":.60,"E2":.48,"E3":.40}
 
-
-def section_ancestors(section_id: str) -> list[str]:
-    parts = [part for part in str(section_id).split(".") if part]
-    return [".".join(parts[:index]) for index in range(1, len(parts) + 1)]
-
-
-def record_sections(record: dict[str, Any]) -> set[str]:
-    sections = {str(record.get("primary_section") or "").strip()}
-    sections.update(str(row.get("id") or "").strip() for row in (record.get("book_sections") or []) if isinstance(row, dict))
-    expanded = {ancestor for sid in sections if sid for ancestor in section_ancestors(sid)}
-    return expanded
-
+def record_topics(record: dict[str, Any]) -> set[str]: return {str(x).strip() for x in record.get("topics") or [] if str(x).strip()}
 
 def calculate(records: Iterable[dict[str, Any]], *, include_review_in_discovered: bool = True) -> dict[str, Any]:
-    metrics: defaultdict[str, Counter[str]] = defaultdict(Counter)
-    totals: Counter[str] = Counter()
+    metrics: defaultdict[str, Counter[str]] = defaultdict(Counter); totals: Counter[str] = Counter()
     for record in records:
-        status = str(record.get("classification_status") or "")
-        decision, _ = corpus_policy.handoff_decision(record)
-        evidence = str(record.get("crawler_evidence_level") or corpus_policy.crawler_evidence_level(record))
-        is_rejected = decision == "REJECT"
-        is_review = decision == "REVIEW"
-        relevance_status = str(record.get("relevance_status") or "")
-        relevant = relevance_status in {"STRONG", "PROBABLE"} or (not relevance_status and not is_rejected)
-        acquired = bool(record.get("handoff_candidate", False)) or str(record.get("acquisition_status") or "") in {"DOWNLOADED_PDF", "SNAPSHOTTED_WEB"}
-        discovered = not is_rejected and (include_review_in_discovered or not is_review)
-        eligible = decision == "AUTO_HANDOFF" and relevant and acquired
-        authority_weight = AUTHORITY_WEIGHTS.get(str(record.get("authority_tier") or "").upper(), 0.45)
-        dimensions = {
-            "raw_matches": True,
-            "relevant_matches": relevant,
-            "acquired_matches": relevant and acquired,
-            "handoff_candidates": eligible,
-            "discovered_count": discovered,
-            "accepted_count": status in corpus_policy.AUTO_HANDOFF,
-            "review_count": is_review,
-            "corpus_eligible_count": eligible,
-            "inspected_text_count": evidence in {"LIGHT_PDF_TEXT", "WEB_SNAPSHOT_TEXT", "ABSTRACT", "ORIGINAL_ACQUIRED"},
-        }
-        for name, enabled in dimensions.items():
-            if enabled:
-                totals[name] += 1
-        for sid in record_sections(record):
-            for name, enabled in dimensions.items():
-                if enabled:
-                    metrics[sid][name] += 1
-            if eligible:
-                metrics[sid]["authority_weighted_score"] += authority_weight
-        if eligible:
-            totals["authority_weighted_score"] += authority_weight
-    normalized_sections: dict[str, dict[str, Any]] = {}
-    for sid, values in sorted(metrics.items()):
-        normalized_sections[sid] = {
-            key: round(value, 3) if key == "authority_weighted_score" else value
-            for key, value in values.items()
-        }
-    return {
-        "policy_version": "2.0",
-        "parent_aggregation": True,
-        "gap_basis": "handoff_candidates",
-        "totals": {key: round(value, 3) if key == "authority_weighted_score" else value for key, value in totals.items()},
-        "sections": normalized_sections,
-    }
+        decision, _ = corpus_policy.handoff_decision(record); relevance = str(record.get("relevance_status") or "")
+        relevant = relevance in {"STRONG","PROBABLE"}; acquired = bool(record.get("handoff_candidate")) or str(record.get("acquisition_status") or "") in {"DOWNLOADED_PDF","SNAPSHOTTED_WEB","DOWNLOADED_ORIGINAL"}
+        handoff = decision == "AUTO_HANDOFF" and relevant and acquired
+        flags = {"discovered": decision != "REJECT", "relevant": relevant, "acquired": relevant and acquired, "handoff": handoff}
+        for key, enabled in flags.items(): totals[key] += int(enabled)
+        for topic in record_topics(record):
+            for key, enabled in flags.items(): metrics[topic][key] += int(enabled)
+            if handoff: metrics[topic]["authority_weight_milli"] += int(AUTHORITY_WEIGHTS.get(str(record.get("authority_tier") or ""), .35)*1000)
+    topics = {}
+    for topic, values in sorted(metrics.items()):
+        row = dict(values); row["authority_weighted_handoff"] = round(row.pop("authority_weight_milli",0)/1000,3); topics[topic] = row
+    return {"schema_version":"1.0","basis":"book_agnostic_broad_topics","informational_only":True,"targets_required_for_go":False,"topics":topics,"totals":dict(totals)}
+
+# Legacy function names remain importable but no chapter expansion occurs.
+def record_sections(record: dict[str, Any]) -> set[str]: return set()
+def section_ancestors(section_id: str) -> list[str]: return []

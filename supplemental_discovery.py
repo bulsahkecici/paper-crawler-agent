@@ -351,7 +351,7 @@ def search_internet_archive(query: str, limit: int = 20) -> list[free_discovery.
 def discover_books(queries: list[str], per_source: int = 10) -> tuple[list[free_discovery.DiscoveryRecord], list[str]]:
     records: list[free_discovery.DiscoveryRecord] = []
     errors: list[str] = []
-    # Book discovery uses a bounded subset of chapter-aware queries.
+    # Book discovery uses a bounded subset of broad tunnel-topic queries.
     for query in queries:
         for name, fn in (("crossref_books", search_crossref_books), ("openlibrary", search_openlibrary), ("internet_archive", search_internet_archive)):
             try:

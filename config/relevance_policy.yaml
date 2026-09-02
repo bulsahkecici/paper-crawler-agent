@@ -97,7 +97,9 @@ negative_patterns:
   - quantum tunneling
   - quantum tunnelling
   - tunnel junction
+  - tunnel fet
   - fet tunnel
+  - tunnel diode
   - spintronic
   - antiferromagnetic
   - ssh tunnel
@@ -108,6 +110,7 @@ negative_patterns:
   - tarsal tunnel
   - animal tunnel
   - animal tunnels
+  - insect tunnel
   - agricultural high tunnel
   - agricultural high tunnels
   - high tunnel crop

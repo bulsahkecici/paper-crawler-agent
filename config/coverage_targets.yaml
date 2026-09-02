@@ -1,4 +1,6 @@
 version: 1
+deprecated: true
+deprecated_reason: "Historical chapter targets; ignored by the book-agnostic pipeline."
 
 # Minimum classified-source counts used to trigger a focused second discovery pass.
 # These are discovery coverage targets, not final evidence sufficiency rules.

@@ -7,7 +7,7 @@ import supplemental_discovery
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run free chapter-aware source discovery.")
+    parser = argparse.ArgumentParser(description="Run free book-agnostic tunnel source discovery.")
     parser.add_argument("--output-dir", default=None)
     parser.add_argument("--max-queries", type=int, default=60)
     parser.add_argument("--per-source", type=int, default=10)

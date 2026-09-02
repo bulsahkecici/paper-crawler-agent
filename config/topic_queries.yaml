@@ -1,0 +1,8 @@
+schema_version: "1.0"
+queries:
+  en: [road tunnel, tunnel standard, tunnel maintenance, tunnel safety, tunnel ventilation, tunnel construction cost, tunnel life cycle cost, NATM tunnel, TBM tunnel]
+  de: [Straßentunnel, Tunnel Sicherheit, Tunnel Betrieb, Tunnel Instandhaltung, Tunnelbau]
+  fr: [tunnel routier, sécurité des tunnels, entretien tunnel, exploitation tunnel]
+  nl: [wegtunnel, tunnelveiligheid, onderhoud tunnel]
+  no: [vegtunnel, tunnelsikkerhet, tunnel vedlikehold]
+  tr: [karayolu tüneli, tünel bakım, tünel işletme, tünel yapım, tünel maliyet]

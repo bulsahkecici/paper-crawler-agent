@@ -24,6 +24,7 @@ import corpus_policy
 import coverage_policy
 import hybrid_classifier as hybrid
 import relevance_engine as relevance
+import presentation_sources
 import tunnel_harvest as harvest
 
 
@@ -207,10 +208,9 @@ def classify_catalog(
     classifications_dir = _classification_dir(root)
     counters = {
         "status": Counter(), "type": Counter(), "source": Counter(), "tier": Counter(),
-        "route": Counter(), "section": Counter(), "usable_section": Counter(), "topic": Counter(), "input": Counter(), "method": Counter(),
+        "route": Counter(), "topic": Counter(), "relevance": Counter(), "input": Counter(), "method": Counter(),
     }
     low_confidence: list[dict[str, Any]] = []
-    missing_section: list[dict[str, Any]] = []
     results: list[dict[str, Any]] = []
 
     for index, record in enumerate(papers, 1):
@@ -236,13 +236,15 @@ def classify_catalog(
             llm_model=selected_llm_model,
             profile_vectors=profile_vectors,
         ) if use_local_ai else classifier.classify_record(class_record).as_dict()
+        if "PRESENTATION" in str(result.get("document_type") or ""):
+            result.update(presentation_sources.resolve_presentation({**class_record, **result}))
 
         source_path = record.get("source_path") or record.get("local_pdf_path") or record.get("pdf_path") or record.get("path")
         source_exists = bool(source_path and Path(str(source_path)).expanduser().exists())
         acquisition_ok = str(record.get("acquisition_status") or "").upper() in {"DOWNLOADED_PDF", "SNAPSHOTTED_WEB"}
         handoff_candidate = source_exists and (acquisition_ok or not record.get("discovery_source"))
         payload = {
-            "schema_version": "2.2",
+            "schema_version": "3.0",
             "document_key": record.get("doi") or record.get("source_sha256") or record.get("discovery_key") or _stem_for_record(record, index),
             "canonical_id": record.get("canonical_id"),
             "duplicate_sources": record.get("duplicate_sources") or [],
@@ -251,6 +253,11 @@ def classify_catalog(
             "title": record.get("title"),
             "authors": record.get("authors") or [],
             "year": record.get("year"),
+            "work_id": record.get("work_id"),
+            "edition": record.get("edition") or record.get("version"),
+            "publication_date": record.get("publication_date"),
+            "supersedes": record.get("supersedes"),
+            "is_current": record.get("is_current"),
             "publisher": record.get("publisher") or record.get("venue"),
             "doi": harvest.normalize_doi(record.get("doi")),
             "source_sha256": record.get("source_sha256"),
@@ -270,7 +277,7 @@ def classify_catalog(
             "classification_text": classification_text[:12000],
             **relevance_decision,
             "handoff_candidate": handoff_candidate,
-            **result,
+            **classifier.migrate_legacy_fields(result),
         }
         payload["crawler_evidence_level"] = corpus_policy.crawler_evidence_level({**record, **payload})
         payload["evidence_level"] = payload["crawler_evidence_level"]  # migration alias
@@ -298,13 +305,9 @@ def classify_catalog(
         counters["source"][str(result.get("source_class"))] += 1
         counters["tier"][str(result.get("authority_tier"))] += 1
         counters["route"][str(result.get("route_path"))] += 1
-        for section in result.get("book_sections") or []:
-            sid = str(section.get("id"))
-            counters["section"][sid] += 1
-            if handoff_candidate:
-                counters["usable_section"][sid] += 1
         for topic in result.get("topics") or []:
             counters["topic"][str(topic)] += 1
+        counters["relevance"][str(relevance_decision.get("relevance_status"))] += 1
         confidence = float(result.get("classification_confidence") or 0.0)
         if confidence < 0.75:
             low_confidence.append({
@@ -313,15 +316,10 @@ def classify_catalog(
                 "document_type": result.get("document_type"), "route_path": result.get("route_path"),
                 "discovery_source": record.get("discovery_source"),
             })
-        if not result.get("primary_section"):
-            missing_section.append({
-                "title": record.get("title"), "document_type": result.get("document_type"),
-                "source_class": result.get("source_class"), "discovery_source": record.get("discovery_source"),
-            })
         if index % 25 == 0 or index == len(papers):
             print(
                 f"[classify] {index}/{len(papers)} status={result.get('classification_status')} "
-                f"primary_section={result.get('primary_section') or 'none'}",
+                f"topics={len(result.get('topics') or [])}",
                 flush=True,
             )
 
@@ -336,7 +334,7 @@ def classify_catalog(
         "invariant_ok": raw_total - dedup_removed == len(papers) == len(results),
     }
     audit = {
-        "schema_version": "2.2",
+        "schema_version": "3.0",
         "documents": len(results),
         "input_counts": dict(counters["input"]),
         "classic_catalog_rows": len(classic),
@@ -361,15 +359,13 @@ def classify_catalog(
         "source_class_counts": dict(counters["source"]),
         "authority_tier_counts": dict(counters["tier"]),
         "route_counts": dict(counters["route"]),
-        "section_coverage": dict(sorted(counters["section"].items())),
-        "handoff_candidate_section_coverage": dict(sorted(counters["usable_section"].items())),
+        "relevance_counts": dict(counters["relevance"]),
+        "topic_coverage": coverage.get("topics") or {},
         "coverage": coverage,
         "reconciliation": reconciliation_report,
         "topic_counts": dict(counters["topic"].most_common()),
         "low_confidence_count": len(low_confidence),
-        "missing_section_count": len(missing_section),
         "low_confidence": low_confidence,
-        "missing_section": missing_section,
     }
     audit_path = _audit_dir(root) / "classification_audit.json"
     audit_path.write_text(json.dumps(audit, ensure_ascii=False, indent=2), encoding="utf-8")
