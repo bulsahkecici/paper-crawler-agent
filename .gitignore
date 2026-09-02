@@ -6,3 +6,4 @@ venv/
 .DS_Store
 tunel_makaleleri/*
 !tunel_makaleleri/.gitkeep
+timeout
