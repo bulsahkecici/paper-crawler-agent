@@ -341,6 +341,14 @@ def classify_catalog(
         "discovery_catalog_rows": len(discovered),
         "local_ai": {
             "embedding_model": selected_embedding_model,
+            "embedding_dimensions": sorted({
+                row.get("embedding_review", {}).get("embedding_dimension")
+                for row in results if row.get("embedding_review", {}).get("embedding_dimension") is not None
+            }),
+            "embedding_provider": next((
+                row.get("embedding_review", {}).get("embedding_provider")
+                for row in results if row.get("embedding_review", {}).get("embedding_provider")
+            ), None),
             "llm_model": selected_llm_model,
             "loopback_only": True,
         },
@@ -395,8 +403,8 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Classify PaperCrawler harvest + free-discovery catalogs.")
     parser.add_argument("--output-dir", default=None)
     parser.add_argument("--rules-only", action="store_true", help="Disable local embedding and LLM review.")
-    parser.add_argument("--embedding-server", default=None, help="Loopback OpenAI-compatible embedding server.")
-    parser.add_argument("--embedding-model", default=None, help="Embedding model ID or unique model-name fragment.")
+    parser.add_argument("--embedding-server", default=hybrid.DEFAULT_EMBEDDING_SERVER, help="Loopback OpenAI-compatible embedding server.")
+    parser.add_argument("--embedding-model", default=hybrid.DEFAULT_EMBEDDING_MODEL, help="Embedding model ID or unique model-name fragment.")
     parser.add_argument("--llm-server", default=None, help="Loopback OpenAI-compatible chat model server.")
     parser.add_argument("--llm-model", default=None, help="Chat model ID or unique model-name fragment.")
     return parser.parse_args()

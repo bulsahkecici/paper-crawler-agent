@@ -42,6 +42,14 @@ class CountingLlmClient(FakeLlmClient):
 
 
 class HybridClassificationTests(unittest.TestCase):
+    def test_bge_m3_is_the_configured_default(self) -> None:
+        config = hybrid._load_yaml("classification_policy.yaml")["embedding"]
+        self.assertEqual(hybrid.DEFAULT_EMBEDDING_MODEL, "text-embedding-baai-bge-m3-568m")
+        self.assertEqual(config["default_model"], hybrid.DEFAULT_EMBEDDING_MODEL)
+
+    def test_requested_embedding_model_never_falls_back_silently(self) -> None:
+        self.assertIsNone(hybrid._pick(["text-embedding-some-other-model"], "bge-m3", True))
+
     def test_non_loopback_model_server_rejected(self) -> None:
         self.assertFalse(hybrid.is_loopback_url("https://api.example.com/v1"))
         with self.assertRaises(ValueError):
@@ -56,18 +64,29 @@ class HybridClassificationTests(unittest.TestCase):
         result = hybrid.classify_hybrid(
             record,
             embedding_client=FakeEmbeddingClient(),
-            embedding_model="text-embedding-nomic-embed-text-v1.5",
+            embedding_model="text-embedding-baai-bge-m3-568m",
         )
         self.assertIn("life_cycle_cost", result["topics"])
         self.assertTrue(result["embedding_review"]["topics"])
         self.assertIn("embedding", result["methods"])
+        self.assertEqual(result["embedding_review"]["embedding_dimension"], 3)
+        self.assertEqual(result["embedding_review"]["embedding_provider"], "lm_studio")
+        self.assertTrue(result["embedding_review"]["generated_at"])
+
+    def test_profile_vector_cache_is_model_namespaced(self) -> None:
+        cache = {}
+        record = {"title": "Life cycle cost analysis of road tunnels"}
+        hybrid.embedding_scores(record, FakeEmbeddingClient(), "model-a", profile_vectors=cache)
+        first_size = len(cache)
+        hybrid.embedding_scores(record, FakeEmbeddingClient(), "model-b", profile_vectors=cache)
+        self.assertEqual(len(cache), first_size * 2)
 
     def test_qwen_can_only_select_controlled_source_labels(self) -> None:
         record = {"title": "Ambiguous tunnel life cycle maintenance study", "source": "crossref"}
         result = hybrid.classify_hybrid(
             record,
             embedding_client=FakeEmbeddingClient(),
-            embedding_model="text-embedding-nomic-embed-text-v1.5",
+            embedding_model="text-embedding-baai-bge-m3-568m",
             llm_client=FakeLlmClient(),
             llm_model="qwen3.6-35b-a3b-mlx",
         )
@@ -86,7 +105,7 @@ class HybridClassificationTests(unittest.TestCase):
                 "relevance_status": "STRONG",
             },
             embedding_client=FakeEmbeddingClient(),
-            embedding_model="text-embedding-nomic-embed-text-v1.5",
+            embedding_model="text-embedding-baai-bge-m3-568m",
             llm_client=llm,
             llm_model="qwen3.6-35b-a3b-mlx",
         )

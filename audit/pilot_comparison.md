@@ -35,7 +35,7 @@ Yerel model sunucusu çalışıyorken, ağ erişimi olan bir terminalde aşağı
 komutu kullanın:
 
 ```bash
-python3 prepare_tunnelbookai_handoff.py --output-dir tunel_makaleleri --max-queries 12 --per-source 5 --embedding-server http://127.0.0.1:1234/v1 --embedding-model text-embedding-nomic-embed-text-v1.5 --llm-server http://127.0.0.1:1234/v1 --llm-model qwen3.6-35b-a3b-mlx
+python3 prepare_tunnelbookai_handoff.py --output-dir tunel_makaleleri --max-queries 12 --per-source 5 --embedding-server http://127.0.0.1:1234/v1 --embedding-model text-embedding-baai-bge-m3-568m --llm-server http://127.0.0.1:1234/v1 --llm-model qwen3.6-35b-a3b-mlx
 ```
 
 Sonuçlar şu dosyalardan karşılaştırılmalıdır:

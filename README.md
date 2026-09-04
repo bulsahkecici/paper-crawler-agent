@@ -39,7 +39,7 @@ PDF, HTML, PPT/PPTX, DOC/DOCX, XLS/XLSX, CSV, TXT, Markdown, and public ZIP orig
 python3 prepare_tunnelbookai_handoff.py \
   --output-dir tunel_makaleleri \
   --embedding-server http://127.0.0.1:1234/v1 \
-  --embedding-model text-embedding-nomic-embed-text-v1.5 \
+  --embedding-model text-embedding-baai-bge-m3-568m \
   --llm-server http://127.0.0.1:1234/v1 \
   --llm-model qwen3.6-35b-a3b-mlx
 ```

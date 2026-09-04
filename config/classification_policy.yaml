@@ -2,12 +2,14 @@ version: 1
 
 embedding:
   enabled: true
+  default_model: "text-embedding-baai-bge-m3-568m"
   local_servers:
     - "http://127.0.0.1:1234/v1"
     - "http://127.0.0.1:11434/v1"
     - "http://127.0.0.1:8000/v1"
   preferred_model_terms:
-    - "nomic-embed"
+    - "bge-m3"
+    - "bge"
     - "embedding"
     - "embed"
   top_k: 5

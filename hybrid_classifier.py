@@ -2,6 +2,7 @@
 """Optional local-only review for source relevance, type and broad topics."""
 from __future__ import annotations
 import ipaddress, json, re, socket
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -9,6 +10,8 @@ import requests, yaml
 import classification_engine as base
 
 CONFIG_DIR = Path(__file__).resolve().parent / "config"
+DEFAULT_EMBEDDING_SERVER = "http://127.0.0.1:1234/v1"
+DEFAULT_EMBEDDING_MODEL = "text-embedding-baai-bge-m3-568m"
 
 def _load_yaml(name: str) -> dict[str, Any]:
     value = yaml.safe_load((CONFIG_DIR / name).read_text(encoding="utf-8")) or {}
@@ -45,8 +48,9 @@ class LocalOpenAIClient:
 
 def _pick(ids: list[str], requested: str | None, embedding: bool) -> str | None:
     candidates = [x for x in ids if ("embed" in x.casefold()) == embedding]
-    needles = [requested] if requested else (["nomic-embed", "embed"] if embedding else ["qwen3.6", "qwen3"])
-    return next((x for n in needles if n for x in candidates if n.casefold() in x.casefold()), candidates[0] if candidates else None)
+    needles = [requested] if requested else (["bge-m3", "bge", "embed"] if embedding else ["qwen3.6", "qwen3"])
+    match = next((x for n in needles if n for x in candidates if n.casefold() in x.casefold()), None)
+    return match if requested else (match or (candidates[0] if candidates else None))
 
 def _probe(servers: list[str], requested: str | None, embedding: bool) -> tuple[LocalOpenAIClient | None, str | None]:
     for url in servers:
@@ -60,24 +64,44 @@ def _probe(servers: list[str], requested: str | None, embedding: bool) -> tuple[
 
 def detect_local_clients(*, embedding_servers=None, embedding_model=None, llm_servers=None, llm_model=None):
     cfg = _load_yaml("classification_policy.yaml"); defaults = ["http://127.0.0.1:1234/v1"]
-    emb = list(embedding_servers or (cfg.get("embedding") or {}).get("local_servers") or defaults)
+    embedding_cfg = cfg.get("embedding") or {}
+    emb = list(embedding_servers or embedding_cfg.get("local_servers") or defaults)
     llm = list(llm_servers or (cfg.get("llm_review") or {}).get("local_servers") or defaults)
-    ec, em = _probe(emb, embedding_model, True); lc, lm = _probe(llm, llm_model, False)
+    ec, em = _probe(emb, embedding_model or embedding_cfg.get("default_model") or DEFAULT_EMBEDDING_MODEL, True); lc, lm = _probe(llm, llm_model, False)
     return ec, em, lc, lm
 
-def detect_local_embedding(server=None, model=None): return _probe([server] if server else ["http://127.0.0.1:1234/v1"], model, True)
+def detect_local_embedding(server=None, model=None):
+    cfg = _load_yaml("classification_policy.yaml").get("embedding") or {}
+    servers = [server] if server else list(cfg.get("local_servers") or [DEFAULT_EMBEDDING_SERVER])
+    return _probe(servers, model or cfg.get("default_model") or DEFAULT_EMBEDDING_MODEL, True)
 
 def _record_text(record: dict[str, Any]) -> str:
     return "\n".join(f"{k}: {record.get(k) or ''}" for k in ("title","abstract","keywords","venue","publisher","organization"))[:12000]
 
-def embedding_scores(record: dict[str, Any], client: LocalOpenAIClient, model: str, *, profile_vectors=None) -> list[dict[str, Any]]:
+def _embedding_provider(client: LocalOpenAIClient) -> str:
+    port = urlparse(client.base_url).port
+    return "lm_studio" if port == 1234 else ("ollama" if port == 11434 else "openai_compatible_local")
+
+def embedding_scores(record: dict[str, Any], client: LocalOpenAIClient, model: str, *, profile_vectors=None, embedding_metadata=None) -> list[dict[str, Any]]:
     """Compatibility helper: broad-topic similarity, never chapter similarity."""
     import math
     doc = client.embedding(model, _record_text(record)); vectors = profile_vectors if profile_vectors is not None else {}
+    dimension = len(doc)
+    if not dimension: raise ValueError("embedding API returned an empty vector")
+    namespace = (client.base_url, model, dimension)
+    if embedding_metadata is not None:
+        embedding_metadata.update({
+            "embedding_model": model,
+            "embedding_dimension": dimension,
+            "embedding_provider": _embedding_provider(client),
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+        })
     out = []
     for topic, terms in base.TOPIC_TERMS.items():
-        vec = vectors.get(topic) or client.embedding(model, f"Tunnel engineering topic {topic}: {'; '.join(terms)}")
-        vectors[topic] = vec; den = math.sqrt(sum(x*x for x in doc))*math.sqrt(sum(x*x for x in vec)); sim = sum(a*b for a,b in zip(doc,vec))/den if den else 0
+        cache_key = (*namespace, topic)
+        vec = vectors.get(cache_key) or client.embedding(model, f"Tunnel engineering topic {topic}: {'; '.join(terms)}")
+        if len(vec) != dimension: raise ValueError(f"embedding dimension mismatch: document={dimension}, profile={len(vec)}")
+        vectors[cache_key] = vec; den = math.sqrt(sum(x*x for x in doc))*math.sqrt(sum(x*x for x in vec)); sim = sum(a*b for a,b in zip(doc,vec))/den if den else 0
         if sim >= .25: out.append({"topic": topic, "score": round((sim+1)/2, 4)})
     return sorted(out, key=lambda x:x["score"], reverse=True)[:8]
 
@@ -93,11 +117,11 @@ def classify_hybrid(record: dict[str, Any], *, embedding_client=None, embedding_
     if str(record.get("relevance_status") or "").upper() == "IRRELEVANT":
         payload.update(classification_status="REJECT_IRRELEVANT", classification_confidence=1.0)
         payload["llm_review"] = {"enabled":False,"used":False,"reason":"irrelevant_gate"}; return payload
-    topic_scores, error = [], None
+    topic_scores, error, embedding_metadata = [], None, {}
     if embedding_client and embedding_model:
-        try: topic_scores = embedding_scores(record, embedding_client, embedding_model, profile_vectors=profile_vectors)
+        try: topic_scores = embedding_scores(record, embedding_client, embedding_model, profile_vectors=profile_vectors, embedding_metadata=embedding_metadata)
         except (requests.RequestException, ValueError, OSError) as exc: error = str(exc)
-    payload["embedding_review"] = {"enabled":bool(embedding_client and embedding_model),"model":embedding_model,"topics":topic_scores,"error":error}
+    payload["embedding_review"] = {"enabled":bool(embedding_client and embedding_model),"model":embedding_model,**embedding_metadata,"topics":topic_scores,"error":error}
     for row in topic_scores:
         if row["score"] >= .72 and row["topic"] not in payload["topics"]: payload["topics"].append(row["topic"])
     triggers = []
