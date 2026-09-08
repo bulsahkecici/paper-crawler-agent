@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>PaperCrawler · İndirme Masası</title><link rel="stylesheet" href="/styles.css"><link rel="stylesheet" href="/downloads.css">
+</head>
+<body class="downloads-page">
+  <header><div><p class="eyebrow">PAPERCRAWLER</p><h1>Manuel İndirme Masası</h1></div><div class="header-actions"><a class="ghost nav-link" href="/">Sınıflandırma masası</a><button id="scan" class="ghost">Klasörü tara</button><button id="rebuild" class="ghost">Handoff'u yenile</button><span id="saveState">Hazır</span></div></header>
+  <section id="stats" class="stats"></section>
+  <main>
+    <aside>
+      <label class="search"><span>Ara</span><input id="search" placeholder="Başlık, DOI, kaynak…"></label>
+      <div class="filters acquisition-filters"><button data-state="pending" class="active">İndirilebilir</button><button data-state="matched">Dosyası bulunan</button><button data-state="resolved">Aktarılan</button><button data-state="excluded">Gizlenenler</button><button data-state="all">Tümü</button></div>
+      <div id="list" class="list"></div>
+    </aside>
+    <article id="detail" class="detail"><div class="empty">Bir kayıt seçin</div></article>
+  </main>
+  <template id="downloadTemplate">
+    <div class="record-head"><div><div class="chips"></div><h2></h2><p class="identity"></p></div><span class="counter"></span></div>
+    <div class="meta"></div>
+    <section class="download-guide"><div><h3>1 · Kaynağı bul ve indir</h3><p>Önce doğrudan PDF'yi, olmazsa kaynak veya DOI sayfasını aç. İndirdiğin PDF'yi aşağıdaki klasöre koy.</p></div><code id="downloadsPath"></code></section>
+    <div class="source-actions"></div>
+    <section class="record-evidence"><h3>Kayıt bilgileri</h3><div class="evidence"></div></section>
+    <section class="import-panel"><div><h3>2 · İndirilen PDF'yi eşleştir</h3><p id="matchText"></p></div><div class="import-controls"><select id="fileSelect"></select><button id="importPdf" class="primary">PDF'yi korpusa aktar</button></div><p class="import-note">Aktarımda PDF bütünlüğü ve SHA-256 doğrulanır. Mevcut dosyaların üzerine yazılmaz; sınıflandırma indeksi önce yedeklenir.</p></section>
+    <p class="shortcuts">J/↓ sonraki · K/↑ önceki</p>
+  </template>
+  <script src="/downloads.js"></script>
+</body></html>

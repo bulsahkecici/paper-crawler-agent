@@ -1,14 +1,62 @@
 schema_version: "1.0"
 platforms:
-  slideshare: {domains: [slideshare.net], source_class: PRESENTATION_PLATFORM, enabled: true, acquisition: public_only}
-  speaker_deck: {domains: [speakerdeck.com], source_class: PRESENTATION_PLATFORM, enabled: true, acquisition: public_only}
-  slideserve: {domains: [slideserve.com], source_class: PRESENTATION_PLATFORM, enabled: true, acquisition: metadata_first}
-  zenodo: {domains: [zenodo.org], source_class: RESEARCH_REPOSITORY, enabled: true, acquisition: public_files}
-  figshare: {domains: [figshare.com], source_class: RESEARCH_REPOSITORY, enabled: true, acquisition: public_files}
-  researchgate: {domains: [researchgate.net], source_class: RESEARCH_REPOSITORY, enabled: true, acquisition: metadata_only_unless_public}
+  slideshare:
+    domains: [slideshare.net, www.slideshare.net]
+    source_class: PRESENTATION_PLATFORM
+    enabled: true
+    acquisition: public_only
+    adapter: html_search
+    search_url: "https://www.slideshare.net/search/slideshow?searchfrom=header&q={query}"
+    result_url_patterns: ["^/[^/]+/[^/]+$"]
+  speaker_deck:
+    domains: [speakerdeck.com, www.speakerdeck.com]
+    source_class: PRESENTATION_PLATFORM
+    enabled: true
+    acquisition: public_only
+    adapter: html_search
+    search_url: "https://speakerdeck.com/search?q={query}"
+    result_url_patterns: ["^/[^/]+/[^/]+$"]
+  slideserve:
+    domains: [slideserve.com, www.slideserve.com]
+    source_class: PRESENTATION_PLATFORM
+    enabled: true
+    acquisition: metadata_first
+    adapter: html_search
+    search_url: "https://www.slideserve.com/search/{query}"
+    result_url_patterns: ["^/[^/]+/"]
+  zenodo:
+    domains: [zenodo.org, www.zenodo.org]
+    source_class: RESEARCH_REPOSITORY
+    enabled: true
+    acquisition: public_files
+    adapter: zenodo_api
+    search_url: "https://zenodo.org/api/records?q={query}%20AND%20resource_type.type:presentation&size={limit}"
+  figshare:
+    domains: [figshare.com, www.figshare.com]
+    source_class: RESEARCH_REPOSITORY
+    enabled: true
+    acquisition: public_files
+    adapter: html_search
+    search_url: "https://figshare.com/search?q={query}"
+    result_url_patterns: ["/articles/(presentation|media)/"]
+  researchgate:
+    domains: [researchgate.net, www.researchgate.net]
+    source_class: RESEARCH_REPOSITORY
+    enabled: true
+    acquisition: metadata_only_unless_public
+    adapter: html_search
+    search_url: "https://www.researchgate.net/search/publication?q={query}"
+    result_url_patterns: ["^/publication/"]
 policy:
+  max_queries_per_platform: 8
+  max_records_per_platform: 20
+  max_consecutive_failures: 2
   platform_is_never_producer: true
   prefer_original_institutional_source: true
   bypass_login: false
   bypass_paywall: false
   bypass_download_controls: false
+asset_policy:
+  max_assets_per_deck: 200
+  max_image_bytes: 20971520
+  max_image_pixels: 80000000

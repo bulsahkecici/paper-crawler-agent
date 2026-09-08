@@ -38,6 +38,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--embedding-model", default="text-embedding-baai-bge-m3-568m", help="Embedding model ID or unique model-name fragment.")
     parser.add_argument("--llm-server", default=None, help="Loopback OpenAI-compatible chat model server.")
     parser.add_argument("--llm-model", default=None, help="Chat model ID or unique model-name fragment.")
+    parser.add_argument("--embedding-batch-size", type=int, default=32, help="Local embedding API batch size (default: 32).")
+    parser.add_argument("--llm-workers", type=int, default=2, help="Concurrent local LLM reviews (default: 2).")
     parser.add_argument("--skip-gap-pass", action="store_true", help="Skip coverage-driven second discovery pass.")
     parser.add_argument("--skip-news-books", action="store_true", help="Skip RSS/Atom institutional news and book metadata discovery.")
     parser.add_argument("--no-dynamic-expansion", action="store_true")
@@ -45,6 +47,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--fresh-run", action="store_true", help="Create a new checkpoint state; existing documents are preserved.")
     parser.add_argument("--bootstrap-legacy-checkpoint", action="store_true", help="Adopt validated pre-checkpoint artifacts and resume at the interrupted gap stage.")
     parser.add_argument("--checkpoint-only", action="store_true", help="Write/inspect checkpoint state without running pipeline stages.")
+    parser.add_argument("--llm-accepted-only", action="store_true", help="With --retry-acquisition-only, retry only high-confidence LLM-accepted sources.")
+    parser.add_argument("--retry-status", action="append", default=[], help="With --retry-acquisition-only, retry only current acquisition status (repeatable).")
     modes = parser.add_mutually_exclusive_group()
     modes.add_argument("--classify-only", action="store_true")
     modes.add_argument("--handoff-only", action="store_true")
@@ -70,10 +74,64 @@ def _read_jsonl(path: Path) -> list[dict]:
         return []
 
 
-def _retry_acquisition(root: Path) -> dict:
+_ACQUISITION_FIELDS = {
+    "acquisition_status", "paper_crawler_status", "source_path", "local_pdf_path",
+    "pdf_path", "path", "source_sha256", "source_size_bytes", "resolved_url",
+    "raw_html_path", "raw_html_sha256", "presentation", "presentation_assets",
+    "presentation_asset_extraction", "metadata_only", "initial_acquisition_error",
+    "oa_fallback_url", "acquisition_error",
+}
+
+
+def _same_document(classified: dict, discovered: dict) -> bool:
+    classified_key = str(classified.get("document_key") or "").removeprefix("doi:")
+    discovered_key = str(discovered.get("discovery_key") or "").removeprefix("doi:")
+    return bool(
+        (classified.get("doi") and classified.get("doi") == discovered.get("doi"))
+        or (classified_key and classified_key == discovered_key)
+        or (classified.get("source_url") and classified.get("source_url") == discovered.get("source_url"))
+        or (classified.get("title") and classified.get("title") == discovered.get("title"))
+    )
+
+
+def _sync_classification_acquisition(root: Path, catalog: list[dict]) -> int:
+    """Merge acquisition-only fields without recomputing or changing classification."""
+    index_path = root / "classification_index.jsonl"
+    rows = _read_jsonl(index_path)
+    changed = 0
+    for row in rows:
+        source = next((item for item in catalog if _same_document(row, item)), None)
+        if source is None:
+            continue
+        updates = {key: source.get(key) for key in _ACQUISITION_FIELDS if key in source}
+        if not any(row.get(key) != value for key, value in updates.items()):
+            continue
+        row.update(updates)
+        changed += 1
+        sidecar_value = row.get("classification_path")
+        if sidecar_value:
+            sidecar = Path(str(sidecar_value)).expanduser()
+            if sidecar.is_file():
+                sidecar.write_text(json.dumps(row, ensure_ascii=False, indent=2), encoding="utf-8")
+    if changed:
+        with index_path.open("w", encoding="utf-8") as handle:
+            for row in rows:
+                handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+    return changed
+
+
+def _retry_acquisition(
+    root: Path, *, llm_accepted_only: bool = False,
+    retry_statuses: set[str] | None = None,
+) -> dict:
     """Retry only records already routed to acquisition; never expand discovery."""
     queue_path = root / "exports" / "TunnelBookAI_Source_Pack" / "99_audit" / "retry_acquisition.jsonl"
     queue = _read_jsonl(queue_path)
+    if llm_accepted_only:
+        queue = [item for item in queue if (
+            str(item.get("classification_status") or "").upper() == "LLM_ACCEPTED"
+            and str(item.get("effective_relevance_status") or item.get("llm_relevance_status") or "").upper() in {"STRONG", "PROBABLE"}
+        )]
     catalog_path = root / "discovery_catalog.jsonl"
     catalog = _read_jsonl(catalog_path)
     outcomes: list[dict] = []
@@ -83,19 +141,28 @@ def _retry_acquisition(root: Path) -> dict:
             or (item.get("source_url") and item.get("source_url") == row.get("source_url"))
             or (item.get("title") and item.get("title") == row.get("title"))
         )), item)
+        if retry_statuses and str(source.get("acquisition_status") or "").upper() not in retry_statuses:
+            continue
         allowed = free_discovery.DiscoveryRecord.__dataclass_fields__
         payload = {key: value for key, value in source.items() if key in allowed}
+        promoted = str(item.get("effective_relevance_status") or item.get("llm_relevance_status") or "").upper()
+        if promoted in {"STRONG", "PROBABLE"} and (payload.get("pdf_url") or payload.get("source_url") or payload.get("landing_url")):
+            payload["metadata_only"] = False
         payload.setdefault("title", str(item.get("title") or "Untitled tunnel source"))
         payload.setdefault("source", str(item.get("discovery_source") or "retry"))
         payload.setdefault("discovery_source", str(item.get("discovery_source") or "retry"))
-        result = free_discovery.acquire_record(free_discovery.DiscoveryRecord(**payload), root)
+        result = free_discovery.acquire_record(
+            free_discovery.DiscoveryRecord(**payload), root,
+            relevance_override=promoted if promoted in {"STRONG", "PROBABLE"} else None,
+        )
         source.update(result)
         outcomes.append({"document_id": item.get("document_id"), "title": item.get("title"), "acquisition_status": result.get("acquisition_status")})
     if queue:
         with catalog_path.open("w", encoding="utf-8") as handle:
             for row in catalog:
                 handle.write(json.dumps(row, ensure_ascii=False) + "\n")
-    report = {"attempted": len(queue), "outcomes": outcomes}
+    synced = _sync_classification_acquisition(root, catalog) if queue else 0
+    report = {"attempted": len(outcomes), "classification_records_synced": synced, "outcomes": outcomes}
     (root / "audit" / "retry_acquisition_audit.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     return report
 
@@ -119,6 +186,7 @@ def main() -> None:
             root, use_local_ai=not args.rules_only,
             embedding_server=args.embedding_server, embedding_model=args.embedding_model,
             llm_server=args.llm_server, llm_model=args.llm_model,
+            embedding_batch_size=args.embedding_batch_size, llm_workers=args.llm_workers,
         ), ensure_ascii=False, indent=2))
         return
     if args.handoff_only or args.review_export_only:
@@ -131,7 +199,11 @@ def main() -> None:
         ), ensure_ascii=False, indent=2))
         return
     if args.retry_acquisition_only:
-        print(json.dumps(_retry_acquisition(root), ensure_ascii=False, indent=2))
+        statuses = {str(value).upper() for value in args.retry_status if str(value).strip()}
+        print(json.dumps(_retry_acquisition(
+            root, llm_accepted_only=args.llm_accepted_only,
+            retry_statuses=statuses or None,
+        ), ensure_ascii=False, indent=2))
         return
 
     manifest_context = run_manifest.start(root, models={
@@ -176,6 +248,8 @@ def main() -> None:
         embedding_model=args.embedding_model,
         llm_server=args.llm_server,
         llm_model=args.llm_model,
+        embedding_batch_size=args.embedding_batch_size,
+        llm_workers=args.llm_workers,
     )) or _read_json(root / "audit" / "classification_audit.json")
     gap_report = None
     final_classification = first_classification
@@ -194,6 +268,8 @@ def main() -> None:
                 embedding_model=args.embedding_model,
                 llm_server=args.llm_server,
                 llm_model=args.llm_model,
+                embedding_batch_size=args.embedding_batch_size,
+                llm_workers=args.llm_workers,
             )) or _read_json(root / "audit" / "classification_audit.json")
         elif not state.completed("reclassification"):
             state.mark("reclassification", "COMPLETED", skipped=True)

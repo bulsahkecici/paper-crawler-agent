@@ -13,7 +13,7 @@ def calculate(records: Iterable[dict[str, Any]], *, include_review_in_discovered
     metrics: defaultdict[str, Counter[str]] = defaultdict(Counter); totals: Counter[str] = Counter()
     for record in records:
         decision, _ = corpus_policy.handoff_decision(record); relevance = str(record.get("relevance_status") or "")
-        relevant = relevance in {"STRONG","PROBABLE"}; acquired = bool(record.get("handoff_candidate")) or str(record.get("acquisition_status") or "") in {"DOWNLOADED_PDF","SNAPSHOTTED_WEB","DOWNLOADED_ORIGINAL"}
+        relevant = relevance in {"STRONG","PROBABLE"}; acquired = bool(record.get("handoff_candidate")) or str(record.get("acquisition_status") or "") in {"DOWNLOADED_PDF","DOWNLOADED_PRESENTATION","SNAPSHOTTED_WEB","DOWNLOADED_ORIGINAL"}
         handoff = decision == "AUTO_HANDOFF" and relevant and acquired
         flags = {"discovered": decision != "REJECT", "relevant": relevant, "acquired": relevant and acquired, "handoff": handoff}
         for key, enabled in flags.items(): totals[key] += int(enabled)

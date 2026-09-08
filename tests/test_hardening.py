@@ -144,6 +144,26 @@ class DecisionRouterTests(unittest.TestCase):
         row = self.record(evidence_level="TITLE_METADATA_ONLY")
         self.assertEqual(decision_router.route(row, source_exists=True)["decision"], "AUTO_HANDOFF")
 
+    def test_high_confidence_llm_relevance_promotes_missing_source_to_retry(self):
+        row = self.record(
+            relevance_status="WEAK", classification_status="LLM_ACCEPTED",
+            classification_confidence=0.95, source_path=None,
+            pdf_url="https://example.org/tunnel.pdf",
+            llm_relevance_status="STRONG",
+            llm_review={"used": True, "relevance_status": "STRONG", "confidence": 0.95},
+        )
+        self.assertEqual(decision_router.effective_relevance_status(row), "STRONG")
+        self.assertEqual(decision_router.route(row, source_exists=False)["decision"], "RETRY_ACQUISITION")
+
+    def test_low_confidence_llm_does_not_override_weak_gate(self):
+        row = self.record(
+            relevance_status="WEAK", classification_status="LLM_ACCEPTED",
+            classification_confidence=0.6, source_path=None,
+            pdf_url="https://example.org/tunnel.pdf",
+            llm_relevance_status="STRONG", llm_review={"used": True},
+        )
+        self.assertEqual(decision_router.route(row, source_exists=False)["decision"], "AUTO_REJECT")
+
 
 if __name__ == "__main__":
     unittest.main()

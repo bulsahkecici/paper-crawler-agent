@@ -13,8 +13,13 @@ Inputs:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import sqlite3
+import threading
+import time
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +31,35 @@ import hybrid_classifier as hybrid
 import relevance_engine as relevance
 import presentation_sources
 import tunnel_harvest as harvest
+
+CLASSIFIER_CHECKPOINT_REVISION = "source-classifier-v2-batched"
+
+
+class _ClassificationCheckpoint:
+    """Atomic per-record result store used by --classify-only resume."""
+    def __init__(self, path: Path) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self.connection = sqlite3.connect(path, check_same_thread=False)
+        self.lock = threading.Lock()
+        self.connection.execute("PRAGMA journal_mode=WAL")
+        self.connection.execute("CREATE TABLE IF NOT EXISTS results (record_key TEXT, fingerprint TEXT, payload TEXT, PRIMARY KEY(record_key, fingerprint))")
+        self.connection.commit()
+    def get(self, record_key: str, fingerprint: str) -> dict[str, Any] | None:
+        with self.lock:
+            row = self.connection.execute("SELECT payload FROM results WHERE record_key=? AND fingerprint=?", (record_key, fingerprint)).fetchone()
+        return json.loads(row[0]) if row else None
+    def put(self, record_key: str, fingerprint: str, payload: dict[str, Any]) -> None:
+        with self.lock:
+            self.connection.execute("INSERT OR REPLACE INTO results VALUES (?,?,?)", (record_key, fingerprint, json.dumps(payload, ensure_ascii=False, separators=(",", ":"))))
+            self.connection.commit()
+    def close(self) -> None:
+        with self.lock: self.connection.close()
+
+
+def _classification_fingerprint(record: dict[str, Any], embedding_model: str | None, llm_model: str | None) -> str:
+    config_digest = hashlib.sha256((hybrid.CONFIG_DIR / "classification_policy.yaml").read_bytes()).hexdigest()
+    value = json.dumps({"revision": CLASSIFIER_CHECKPOINT_REVISION, "config": config_digest, "embedding_model": embedding_model, "llm_model": llm_model, "record": record}, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
 def _classification_dir(output_dir: Path) -> Path:
@@ -172,7 +206,10 @@ def classify_catalog(
     embedding_model: str | None = None,
     llm_server: str | None = None,
     llm_model: str | None = None,
+    embedding_batch_size: int = 32,
+    llm_workers: int = 2,
 ) -> dict[str, Any]:
+    total_started = time.perf_counter()
     if output_dir is not None:
         harvest.set_output_dir(output_dir)
     root = harvest.OUTPUT_DIR
@@ -183,7 +220,9 @@ def classify_catalog(
     discovered = _read_jsonl(root / "discovery_catalog.jsonl")
     reconciliation: Counter[str] = Counter()
     initially_merged = _merge_records(classic, discovered, reconciliation)
+    dedup_started = time.perf_counter()
     papers, canonical_reasons = bibliographic_dedup.canonicalize(initially_merged)
+    dedup_seconds = time.perf_counter() - dedup_started
     for reason, count in canonical_reasons.items():
         reconciliation[f"canonical_{reason.lower()}_removed"] += count
 
@@ -213,35 +252,76 @@ def classify_catalog(
     low_confidence: list[dict[str, Any]] = []
     results: list[dict[str, Any]] = []
 
-    for index, record in enumerate(papers, 1):
-        if not isinstance(record, dict):
-            continue
+    prepared: list[tuple[dict[str, Any], dict[str, Any], dict[str, Any], str, str]] = []
+    for record in papers:
+        real_abstract = str(record.get("abstract") or "")
+        classification_text = real_abstract or str(record.get("light_pdf_text") or record.get("text_excerpt") or "")
+        class_record = {**record, "abstract": classification_text[:6000]} if classification_text else dict(record)
+        relevance_decision = relevance.evaluate(class_record)
+        class_record = {**class_record, **relevance_decision}
+        prepared.append(({**record, **relevance_decision}, class_record, relevance_decision, real_abstract, classification_text))
+
+    embedding_seconds = 0.0
+    document_vectors: list[list[float] | None] = [None] * len(prepared)
+    embedding_errors: list[str | None] = [None] * len(prepared)
+    if emb_client and selected_embedding_model:
+        embedding_started = time.perf_counter()
+        embedding_cache = hybrid.EmbeddingCache(root / "audit" / "embedding_cache.sqlite3")
+        eligible_positions = [i for i, item in enumerate(prepared) if item[2].get("relevance_status") != "IRRELEVANT"]
+        eligible_records = [prepared[i][1] for i in eligible_positions]
+        vectors, errors = hybrid.prepare_embedding_batch(
+            eligible_records, emb_client, selected_embedding_model,
+            batch_size=max(1, embedding_batch_size), cache=embedding_cache,
+            profile_vectors=profile_vectors,
+        )
+        embedding_cache.close()
+        for position, vector, error in zip(eligible_positions, vectors, errors):
+            document_vectors[position], embedding_errors[position] = vector, error
+        embedding_seconds = time.perf_counter() - embedding_started
+
+    checkpoint = _ClassificationCheckpoint(root / "audit" / "classification_checkpoint.sqlite3")
+    checkpoint_hits = 0
+    qwen_run_latencies: list[float] = []
+    checkpoint_hits_lock = threading.Lock()
+    def classify_prepared(item: tuple[int, tuple[dict[str, Any], dict[str, Any], dict[str, Any], str, str]]) -> dict[str, Any]:
+        nonlocal checkpoint_hits
+        position, (_, class_record, _, _, _) = item
+        record_key = str(class_record.get("canonical_id") or _record_key(class_record, position + 1))
+        fingerprint = _classification_fingerprint(class_record, selected_embedding_model, selected_llm_model)
+        cached = checkpoint.get(record_key, fingerprint)
+        if cached is not None:
+            with checkpoint_hits_lock: checkpoint_hits += 1
+            return cached
+        result = hybrid.classify_hybrid(
+            class_record,
+            embedding_client=emb_client, embedding_model=selected_embedding_model,
+            llm_client=llm_client, llm_model=selected_llm_model,
+            profile_vectors=profile_vectors, document_vector=document_vectors[position],
+            embedding_error=embedding_errors[position],
+        ) if use_local_ai else classifier.classify_record(class_record).as_dict()
+        if result.get("llm_review", {}).get("used"):
+            with checkpoint_hits_lock:
+                qwen_run_latencies.append(float(result.get("llm_review", {}).get("latency_seconds") or 0.0))
+        checkpoint.put(record_key, fingerprint, result)
+        return result
+
+    with ThreadPoolExecutor(max_workers=max(1, llm_workers), thread_name_prefix="qwen-review") as executor:
+        classified_results = list(executor.map(classify_prepared, enumerate(prepared)))
+    checkpoint.close()
+
+    for index, ((record, class_record, relevance_decision, real_abstract, classification_text), result) in enumerate(zip(prepared, classified_results), 1):
         # An abstract is a publisher-supplied summary. Light PDF text and web
         # excerpts are provisional classifier input only: keep them out of the
         # `abstract` field and feed them to the classifier via a separate,
         # clearly-named text so downstream artifacts never conflate the two.
-        real_abstract = str(record.get("abstract") or "")
-        classification_text = real_abstract or str(
-            record.get("light_pdf_text") or record.get("text_excerpt") or ""
-        )
-        class_record = {**record, "abstract": classification_text[:6000]} if classification_text else dict(record)
-        relevance_decision = relevance.evaluate(class_record)
-        class_record = {**class_record, **relevance_decision}
-        record = {**record, **relevance_decision}
-        result = hybrid.classify_hybrid(
-            class_record,
-            embedding_client=emb_client,
-            embedding_model=selected_embedding_model,
-            llm_client=llm_client,
-            llm_model=selected_llm_model,
-            profile_vectors=profile_vectors,
-        ) if use_local_ai else classifier.classify_record(class_record).as_dict()
         if "PRESENTATION" in str(result.get("document_type") or ""):
             result.update(presentation_sources.resolve_presentation({**class_record, **result}))
 
         source_path = record.get("source_path") or record.get("local_pdf_path") or record.get("pdf_path") or record.get("path")
         source_exists = bool(source_path and Path(str(source_path)).expanduser().exists())
-        acquisition_ok = str(record.get("acquisition_status") or "").upper() in {"DOWNLOADED_PDF", "SNAPSHOTTED_WEB"}
+        acquisition_ok = str(record.get("acquisition_status") or "").upper() in {
+            "DOWNLOADED_PDF", "DOWNLOADED_PRESENTATION", "DOWNLOADED_ORIGINAL", "SNAPSHOTTED_WEB",
+        }
         handoff_candidate = source_exists and (acquisition_ok or not record.get("discovery_source"))
         payload = {
             "schema_version": "3.0",
@@ -268,8 +348,11 @@ def classify_catalog(
             "discovery_source": record.get("discovery_source") or record.get("source"),
             "discovery_query": record.get("discovery_query") or record.get("query"),
             "acquisition_status": record.get("acquisition_status"),
+            "resolved_url": record.get("resolved_url"),
             "raw_html_path": record.get("raw_html_path"),
             "raw_html_sha256": record.get("raw_html_sha256"),
+            "presentation_assets": record.get("presentation_assets") or [],
+            "presentation_asset_extraction": record.get("presentation_asset_extraction"),
             "metadata_only": bool(record.get("metadata_only", False)),
             "abstract": real_abstract[:12000],
             "light_pdf_text": (str(record.get("light_pdf_text") or "")[:12000] or None),
@@ -333,6 +416,7 @@ def classify_catalog(
         "classification_output": len(results),
         "invariant_ok": raw_total - dedup_removed == len(papers) == len(results),
     }
+    total_seconds = time.perf_counter() - total_started
     audit = {
         "schema_version": "3.0",
         "documents": len(results),
@@ -374,6 +458,16 @@ def classify_catalog(
         "topic_counts": dict(counters["topic"].most_common()),
         "low_confidence_count": len(low_confidence),
         "low_confidence": low_confidence,
+        "performance": {
+            "total_seconds": round(total_seconds, 6),
+            "dedup_seconds": round(dedup_seconds, 6),
+            "embedding_seconds": round(embedding_seconds, 6),
+            "qwen_call_count": len(qwen_run_latencies),
+            "average_qwen_latency_seconds": round(sum(qwen_run_latencies) / len(qwen_run_latencies), 6) if qwen_run_latencies else 0.0,
+            "llm_workers": max(1, llm_workers),
+            "embedding_batch_size": max(1, embedding_batch_size),
+            "checkpoint_hits": checkpoint_hits,
+        },
     }
     audit_path = _audit_dir(root) / "classification_audit.json"
     audit_path.write_text(json.dumps(audit, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -407,6 +501,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--embedding-model", default=hybrid.DEFAULT_EMBEDDING_MODEL, help="Embedding model ID or unique model-name fragment.")
     parser.add_argument("--llm-server", default=None, help="Loopback OpenAI-compatible chat model server.")
     parser.add_argument("--llm-model", default=None, help="Chat model ID or unique model-name fragment.")
+    parser.add_argument("--embedding-batch-size", type=int, default=32, help="Local embedding API batch size (default: 32).")
+    parser.add_argument("--llm-workers", type=int, default=2, help="Concurrent local LLM reviews (default: 2).")
     return parser.parse_args()
 
 
@@ -419,6 +515,8 @@ def main() -> None:
         embedding_model=args.embedding_model,
         llm_server=args.llm_server,
         llm_model=args.llm_model,
+        embedding_batch_size=args.embedding_batch_size,
+        llm_workers=args.llm_workers,
     )
 
 

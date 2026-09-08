@@ -32,6 +32,7 @@ import time
 import urllib.parse
 import urllib.robotparser
 import xml.etree.ElementTree as ET
+import zipfile
 from collections import Counter, defaultdict, deque
 from dataclasses import asdict, dataclass, field, replace
 from html.parser import HTMLParser
@@ -43,6 +44,7 @@ import yaml
 
 import classification_engine as classifier
 import hybrid_classifier as hybrid
+import presentation_sources
 import relevance_engine as relevance
 import source_health
 import tunnel_harvest as harvest
@@ -819,6 +821,14 @@ def _guess_web_document_type(title: str, url: str, text: str = "") -> str:
     return "WEB_PAGE"
 
 
+def _is_presentation_resource(title: str, url: str, content_type: str = "") -> bool:
+    suffix = Path(urllib.parse.urlparse(url).path).suffix.lower()
+    blob = f"{title} {url} {content_type}".casefold()
+    return suffix in {".ppt", ".pptx"} or "powerpoint" in content_type.casefold() or any(
+        token in blob for token in ("presentation", "slide deck", "slides", "sunum")
+    )
+
+
 def _allowed_domain(url: str, domains: Iterable[str]) -> bool:
     host = _host(url)
     for domain in domains:
@@ -894,6 +904,23 @@ def crawl_seed_source(source_name: str, source_cfg: dict[str, Any], terms: list[
         pages += 1
         ctype = response.headers.get("Content-Type", "").lower()
         final_url = response.url
+        if _is_presentation_resource("", final_url, ctype) and (
+            "powerpoint" in ctype or Path(urllib.parse.urlparse(final_url).path).suffix.lower() in {".ppt", ".pptx"}
+        ):
+            title = Path(urllib.parse.urlparse(final_url).path).stem or source_name
+            records.append(DiscoveryRecord(
+                title=title, source=source_name.lower(), discovery_source=f"presentation:institutional:{source_name}",
+                discovery_query=query, source_url=final_url, landing_url=final_url,
+                publisher=str(source_cfg.get("publisher") or source_name), document_type="PRESENTATION",
+                source_class=str(source_cfg.get("source_class") or "UNKNOWN"),
+                metadata_only=bool(source_cfg.get("metadata_only", False)), access_kind="institutional_presentation",
+                extra={"presentation_metadata": {
+                    "title": title, "organization": str(source_cfg.get("publisher") or source_name),
+                    "platform_url": final_url, "original_url": final_url, "download_url": final_url,
+                }},
+            ))
+            response.close()
+            continue
         if "application/pdf" in ctype or final_url.lower().split("?", 1)[0].endswith(".pdf"):
             title = Path(urllib.parse.urlparse(final_url).path).stem or source_name
             records.append(DiscoveryRecord(
@@ -920,7 +947,23 @@ def crawl_seed_source(source_name: str, source_cfg: dict[str, Any], terms: list[
                 continue
             clue = f"{child} {anchor}"
             if relevant_text(clue):
-                if child.lower().split("?", 1)[0].endswith(".pdf"):
+                child_suffix = Path(urllib.parse.urlparse(child).path).suffix.lower()
+                if child_suffix in {".ppt", ".pptx"} or (child_suffix == ".pdf" and _is_presentation_resource(anchor, child)):
+                    records.append(DiscoveryRecord(
+                        title=anchor or Path(urllib.parse.urlparse(child).path).stem,
+                        source=source_name.lower(), discovery_source=f"presentation:institutional:{source_name}",
+                        discovery_query=query, source_url=child, landing_url=final_url,
+                        pdf_url=child if child_suffix == ".pdf" else None,
+                        publisher=str(source_cfg.get("publisher") or source_name), document_type="PRESENTATION",
+                        source_class=str(source_cfg.get("source_class") or "UNKNOWN"),
+                        metadata_only=bool(source_cfg.get("metadata_only", False)), access_kind="institutional_presentation_link",
+                        extra={"presentation_metadata": {
+                            "title": anchor or Path(urllib.parse.urlparse(child).path).stem,
+                            "organization": str(source_cfg.get("publisher") or source_name),
+                            "platform_url": final_url, "original_url": child, "download_url": child,
+                        }},
+                    ))
+                elif child_suffix == ".pdf":
                     records.append(DiscoveryRecord(
                         title=anchor or Path(urllib.parse.urlparse(child).path).stem,
                         source=source_name.lower(), discovery_source=f"institutional:{source_name}",
@@ -1176,6 +1219,57 @@ def secure_download_pdf(url: str, destination: Path) -> tuple[str, int, str]:
         response.close()
 
 
+def secure_download_presentation(url: str, destination_dir: Path, stem: str) -> tuple[Path, str, int, str]:
+    """Download and validate a public PDF/PPT/PPTX presentation original."""
+    cfg = _config().get("policy") or {}
+    max_bytes = int(cfg.get("max_presentation_bytes") or cfg.get("max_pdf_bytes") or harvest.MAX_PDF_BYTES)
+    destination_dir.mkdir(parents=True, exist_ok=True)
+    tmp = destination_dir / f"{stem}.part"
+    tmp.unlink(missing_ok=True)
+    response = safe_get(url, stream=True)
+    digest = hashlib.sha256()
+    total = 0
+    header = b""
+    try:
+        with tmp.open("wb") as handle:
+            for chunk in response.iter_content(64 * 1024):
+                if not chunk:
+                    continue
+                if len(header) < 16:
+                    header += chunk[: 16 - len(header)]
+                total += len(chunk)
+                if total > max_bytes:
+                    raise ValueError("presentation exceeds configured size limit")
+                digest.update(chunk)
+                handle.write(chunk)
+        content_type = str(response.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
+        if header.startswith(b"%PDF"):
+            suffix = ".pdf"
+        elif header.startswith(b"PK"):
+            try:
+                with zipfile.ZipFile(tmp) as archive:
+                    if "ppt/presentation.xml" not in archive.namelist():
+                        raise ValueError("ZIP response is not a PPTX presentation")
+            except zipfile.BadZipFile as exc:
+                raise ValueError("invalid PPTX container") from exc
+            suffix = ".pptx"
+        elif header.startswith(bytes.fromhex("D0CF11E0A1B11AE1")):
+            suffix = ".ppt"
+        elif content_type in {"application/vnd.ms-powerpoint", "application/mspowerpoint"}:
+            suffix = ".ppt"
+        else:
+            raise ValueError(f"response is not a supported presentation ({content_type or 'unknown content type'})")
+        destination = destination_dir / f"{stem}{suffix}"
+        destination.unlink(missing_ok=True)
+        tmp.replace(destination)
+        return destination, digest.hexdigest(), total, response.url
+    except Exception:
+        tmp.unlink(missing_ok=True)
+        raise
+    finally:
+        response.close()
+
+
 def _hash_file(path: Path) -> tuple[str, int]:
     digest = hashlib.sha256()
     size = 0
@@ -1268,7 +1362,7 @@ def _acquisition_failure_status(exc: Exception, record: DiscoveryRecord) -> str:
     message = str(exc).casefold()
     if "blocked by policy" in message:
         return "BLOCKED_DOMAIN"
-    if "not a pdf" in message or "content-type" in message:
+    if "not a pdf" in message or "not a supported presentation" in message or "content-type" in message:
         return "INVALID_CONTENT_TYPE"
     if "too large" in message or "exceeds configured size" in message:
         return "SOURCE_TOO_LARGE"
@@ -1277,7 +1371,7 @@ def _acquisition_failure_status(exc: Exception, record: DiscoveryRecord) -> str:
     return "UNKNOWN_ACQUISITION_ERROR"
 
 
-def acquire_record(record: DiscoveryRecord, output_root: Path) -> dict[str, Any]:
+def acquire_record(record: DiscoveryRecord, output_root: Path, *, relevance_override: str | None = None) -> dict[str, Any]:
     payload = record.as_dict()
     payload["paper_crawler_status"] = "DISCOVERED"
     noncontent = relevance.noncontent_decision(payload)
@@ -1287,21 +1381,60 @@ def acquire_record(record: DiscoveryRecord, output_root: Path) -> dict[str, Any]
         payload["paper_crawler_status"] = "FILTERED"
         return payload
     decision = relevance.evaluate(payload)
+    promoted = str(relevance_override or "").upper()
+    if promoted in {"STRONG", "PROBABLE"}:
+        decision = {
+            **decision,
+            "deterministic_relevance_status": decision.get("relevance_status"),
+            "relevance_status": promoted,
+            "relevance_method": "deterministic_then_validated_local_llm",
+        }
     payload.update(decision)
-    if not relevance.acquisition_allowed(decision, payload):
+    llm_validated = promoted in {"STRONG", "PROBABLE"}
+    if not llm_validated and not relevance.acquisition_allowed(decision, payload):
         payload["acquisition_status"] = "REJECT_IRRELEVANT"
         payload["paper_crawler_status"] = "REJECTED"
         return payload
-    if record.metadata_only:
+    if record.metadata_only and promoted not in {"STRONG", "PROBABLE"}:
         payload["acquisition_status"] = "METADATA_ONLY"
         return payload
-    url = record.pdf_url or record.source_url or record.landing_url
+    presentation_meta = record.extra.get("presentation_metadata") if isinstance(record.extra, dict) else {}
+    presentation_meta = presentation_meta if isinstance(presentation_meta, dict) else {}
+    download_url = presentation_meta.get("download_url")
+    is_presentation = "PRESENTATION" in str(record.document_type or "").upper()
+    url = download_url or record.pdf_url or record.source_url or record.landing_url
     if not url:
         payload["acquisition_status"] = "NO_URL"
         return payload
     try:
         looks_pdf = bool(record.pdf_url) or re.search(r"\.pdf(?:$|[?#])", url, re.I)
-        if looks_pdf:
+        if is_presentation and download_url:
+            stem = harvest.sanitize_filename(record.title, max_length=90)
+            fingerprint = hashlib.sha256(normalize_url(str(download_url)).encode("utf-8")).hexdigest()[:10]
+            doc_dir = output_root / "presentations" / f"{stem}_{fingerprint}"
+            source_path, sha, size, resolved = secure_download_presentation(str(download_url), doc_dir, "source")
+            extraction = presentation_sources.extract_slide_assets(
+                source_path, doc_dir / "assets", source_url=resolved, deck_sha256=sha,
+            )
+            merged_meta = {**presentation_meta}
+            if extraction.get("slide_count") and not merged_meta.get("slide_count"):
+                merged_meta["slide_count"] = extraction["slide_count"]
+            payload.update({
+                "source_path": str(source_path),
+                "path": str(source_path),
+                "source_sha256": sha,
+                "source_size_bytes": size,
+                "resolved_url": resolved,
+                "presentation": merged_meta,
+                "presentation_assets": extraction.get("assets") or [],
+                "presentation_asset_extraction": {
+                    "method": extraction.get("extraction_method"),
+                    "errors": extraction.get("errors") or [],
+                    "status": "PROVISIONAL",
+                },
+                "acquisition_status": "DOWNLOADED_PRESENTATION",
+            })
+        elif looks_pdf:
             stem = harvest.sanitize_filename(record.title, max_length=90)
             year = f"{record.year}_" if record.year and str(record.year).isdigit() else ""
             dest = output_root / "pdfs" / f"{year}{stem}.pdf"
@@ -1329,9 +1462,38 @@ def acquire_record(record: DiscoveryRecord, output_root: Path) -> dict[str, Any]
                 "resolved_url": resolved,
                 "acquisition_status": "DOWNLOADED_PDF",
             })
+            if is_presentation:
+                extraction = presentation_sources.extract_slide_assets(
+                    dest, dest.parent / f"{dest.stem}_assets", source_url=resolved, deck_sha256=sha,
+                )
+                payload["presentation_assets"] = extraction.get("assets") or []
+                payload["presentation_asset_extraction"] = {
+                    "method": extraction.get("extraction_method"),
+                    "errors": extraction.get("errors") or [],
+                    "status": "PROVISIONAL",
+                }
+                payload["presentation"] = {**presentation_meta, "slide_count": presentation_meta.get("slide_count") or extraction.get("slide_count")}
         else:
-            payload.update(_snapshot_web(record, output_root))
+            snapshot = _snapshot_web(record, output_root)
+            payload.update(snapshot)
             payload["acquisition_status"] = "SNAPSHOTTED_WEB"
+            if is_presentation:
+                source_dir = Path(str(snapshot["source_path"])).parent
+                extraction = presentation_sources.capture_preview_assets(
+                    presentation_meta.get("preview_image_urls") or [], source_dir / "assets",
+                    source_url=snapshot.get("resolved_url"), deck_sha256=str(snapshot["source_sha256"]),
+                    safe_get=safe_get,
+                )
+                payload["presentation"] = {
+                    **presentation_meta,
+                    "slide_count": presentation_meta.get("slide_count") or extraction.get("slide_count"),
+                }
+                payload["presentation_assets"] = extraction.get("assets") or []
+                payload["presentation_asset_extraction"] = {
+                    "method": extraction.get("extraction_method"),
+                    "errors": extraction.get("errors") or [],
+                    "status": "PROVISIONAL",
+                }
         payload["paper_crawler_status"] = "STAGING"
     except Exception as exc:  # noqa: BLE001
         payload["acquisition_status"] = _acquisition_failure_status(exc, record)
@@ -1429,6 +1591,38 @@ def discover_all(
                         access_kind="sitemap_url",
                     ))
 
+    # Presentation platforms and repositories use bounded, public-only adapters.
+    presentation_rows, presentation_errors = presentation_sources.discover_public_presentations(
+        queries, per_platform=max(1, per_source), safe_get=safe_get,
+    )
+    errors.extend(presentation_errors)
+    presentation_batch: list[DiscoveryRecord] = []
+    for item in presentation_rows:
+        download_url = item.get("download_url")
+        suffix = Path(urllib.parse.urlparse(str(download_url or "")).path).suffix.lower()
+        presentation_batch.append(DiscoveryRecord(
+            title=str(item.get("title") or "Untitled presentation"),
+            source=str(item.get("platform") or "presentation").lower(),
+            discovery_source=str(item.get("discovery_source") or "presentation"),
+            discovery_query=str(item.get("discovery_query") or ""),
+            source_url=item.get("source_url"), landing_url=item.get("landing_url"),
+            pdf_url=download_url if suffix == ".pdf" else None,
+            publisher=str(item.get("organization") or ""),
+            abstract=str(item.get("description") or ""), authors=list(item.get("authors") or []),
+            year=item.get("year"), doi=item.get("doi"), document_type="PRESENTATION",
+            source_class="RESEARCH_REPOSITORY" if str(item.get("platform")) in {"ZENODO", "FIGSHARE"} else "PRESENTATION_PLATFORM",
+            access_kind="presentation_platform",
+            extra={"presentation_metadata": item},
+        ))
+    presentation_batch, rejected = filter_relevant_records(
+        presentation_batch, embedding_client=embedding_client,
+        embedding_model=selected_embedding_model, profile_vectors=relevance_profile_vectors,
+    )
+    rejected_irrelevant += rejected
+    records.extend(presentation_batch)
+    for item in presentation_batch:
+        source_counts[item.discovery_source] += 1
+
     records = deduplicate(records)
     _log(f"discovery complete: unique_records={len(records)}; starting acquisition={acquire}")
 
@@ -1510,6 +1704,12 @@ def discover_all(
         },
         "dynamic_seeds": len(dynamic),
         "source_counts": dict(source_counts),
+        "presentation_stats": {
+            "discovered": len(presentation_batch),
+            "platform_counts": dict(Counter(item.discovery_source for item in presentation_batch)),
+            "assets_extracted": sum(len(row.get("presentation_assets") or []) for row in acquired),
+            "decks_downloaded": sum(str(row.get("acquisition_status")) == "DOWNLOADED_PRESENTATION" for row in acquired),
+        },
         "disabled_sources": sorted(disabled_sources),
         "provider_failures": dict(provider_failures),
         "provider_health": {name: dict(values) for name, values in sorted(provider_health.items())},

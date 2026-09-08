@@ -15,6 +15,7 @@ embedding:
   top_k: 5
   min_similarity: 0.30
   request_timeout_seconds: 20
+  batch_size: 32
 
 fusion:
   rule_weight: 0.55
@@ -29,6 +30,8 @@ llm_review:
   # Any local OpenAI-compatible chat model can be used. Qwen is only the
   # preferred default; CLI --llm-server/--llm-model overrides this list.
   enabled: true
+  default_model: "qwen/qwen3.8-27b"
+  workers: 2
   request_timeout_seconds: 90
   trigger_statuses:
     - LOCAL_LLM_REVIEW
@@ -37,17 +40,14 @@ llm_review:
   ambiguity_score_low: 0.58
   ambiguity_score_high: 0.74
   ambiguity_margin: 0.08
-  max_candidate_sections: 8
-  max_selected_sections: 5
   min_accept_confidence: 0.72
   local_servers:
     - "http://127.0.0.1:1234/v1"
     - "http://127.0.0.1:11434/v1"
     - "http://127.0.0.1:8000/v1"
   preferred_model_terms:
-    - "qwen3.6"
-    - "qwen3-6"
-    - "qwen3.5"
+    - "qwen3.8"
+    - "qwen3-8"
     - "qwen3"
 
 handoff:
@@ -55,6 +55,7 @@ handoff:
     - AUTO_ACCEPT
     - ACCEPT_WITH_AUDIT
     - LLM_ACCEPTED
+    - MANUAL_ACCEPTED
   review_classification_statuses:
     - NEEDS_REVIEW
     - LOCAL_LLM_REVIEW

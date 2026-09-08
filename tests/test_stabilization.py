@@ -15,6 +15,7 @@ import requests
 
 import bibliographic_dedup as bd
 import corpus_quality_gate
+import content_quality_control
 import handoff_quality_gate
 import coverage_policy
 import free_discovery as discovery
@@ -87,6 +88,15 @@ class DedupTests(unittest.TestCase):
     def test_normalized_title(self): self.assertEqual(bd.duplicate_reason({"title": "Road—Tunnel Cost", "year": 2020}, {"title": "road tunnel cost!", "year": 2020}), "TITLE_EXACT")
     def test_fuzzy_title_year_author(self): self.assertEqual(bd.duplicate_reason({"title": "Life cycle costs of road tunnels", "year": 2020, "authors": ["A Smith"]}, {"title": "Life-cycle cost of road tunnels", "year": 2020, "authors": ["A Smith"]}), "TITLE_FUZZY")
     def test_same_title_different_work_not_merged(self): self.assertIsNone(bd.duplicate_reason({"title": "Tunnel Safety", "year": 2019, "authors": ["A"]}, {"title": "Tunnel Safety", "year": 2024, "authors": ["B"]}))
+    def test_canonicalize_keeps_earliest_match_and_reason_priority(self):
+        rows = [
+            {"title": "Road tunnel cost", "year": 2020, "authors": ["A"], "doi": "10.1234/x"},
+            {"title": "Road-tunnel cost", "year": 2020, "authors": ["A"], "doi": "10.1234/y"},
+            {"title": "Other", "year": 2024, "authors": ["B"], "doi": "10.1234/x"},
+        ]
+        canonical, reasons = bd.canonicalize(rows)
+        self.assertEqual(len(canonical), 1)
+        self.assertEqual(reasons, {"TITLE_EXACT": 1, "DOI": 1})
 
 
 class ResumeTests(unittest.TestCase):
@@ -129,12 +139,66 @@ class ResumeTests(unittest.TestCase):
         download.assert_not_called()
         self.assertEqual(result["acquisition_status"], "DOWNLOADED_PDF")
 
+    def test_validated_llm_override_bypasses_weak_metadata_gate(self):
+        root = Path(tempfile.mkdtemp())
+        row = discovery.DiscoveryRecord(
+            title="Ambiguous source", source="x", discovery_source="x",
+            metadata_only=True,
+        )
+        result = discovery.acquire_record(row, root, relevance_override="STRONG")
+        self.assertEqual(result["acquisition_status"], "NO_URL")
+        self.assertEqual(result["relevance_status"], "STRONG")
+        self.assertEqual(result["deterministic_relevance_status"], "IRRELEVANT")
+
+    def test_probable_llm_override_allows_generic_source_url(self):
+        root = Path(tempfile.mkdtemp())
+        row = discovery.DiscoveryRecord(
+            title="Ambiguous tunnel source", source="x", discovery_source="x",
+            source_url="https://example.org/tunnel-source", metadata_only=True,
+        )
+        snapshot = {
+            "source_path": str(root / "source.md"),
+            "source_sha256": "abc",
+            "resolved_url": row.source_url,
+        }
+        with patch.object(discovery, "_snapshot_web", return_value=snapshot):
+            result = discovery.acquire_record(row, root, relevance_override="PROBABLE")
+        self.assertEqual(result["acquisition_status"], "SNAPSHOTTED_WEB")
+
     def test_interrupt_is_recoverable(self):
         root = Path(tempfile.mkdtemp())
         state = pipeline_state.PipelineState(root)
         with self.assertRaises(KeyboardInterrupt):
             state.run("gap_discovery", lambda: (_ for _ in ()).throw(KeyboardInterrupt()))
         self.assertEqual(pipeline_state.PipelineState(root).status("gap_discovery"), "PARTIAL")
+
+    def test_content_quality_gate_rejects_high_confidence_irrelevant(self):
+        row = {
+            "classification_status": "LLM_ACCEPTED", "classification_confidence": 0.9,
+            "llm_relevance_status": "PROBABLE", "llm_review": {"used": True},
+        }
+        content_quality_control._apply_review(row, {
+            "relevance_status": "IRRELEVANT", "confidence": 0.97,
+            "model": "qwen/qwen3.8-27b", "topics": [], "document_type": "REPORT",
+        })
+        self.assertEqual(row["classification_status"], "REJECT_IRRELEVANT")
+        self.assertEqual(row["pre_content_quality_review"]["llm_relevance_status"], "PROBABLE")
+
+    def test_content_quality_gate_sends_weak_to_review(self):
+        row = {"classification_status": "LLM_ACCEPTED"}
+        content_quality_control._apply_review(row, {
+            "relevance_status": "WEAK", "confidence": 0.9,
+            "model": "qwen/qwen3.8-27b", "topics": [], "document_type": "REPORT",
+        })
+        self.assertEqual(row["classification_status"], "NEEDS_REVIEW")
+
+    def test_content_quality_gate_does_not_auto_reject_explicit_tunnel_title(self):
+        row = {"title": "Back-analysis of Shimizu Tunnel No. 3", "classification_status": "LLM_ACCEPTED"}
+        content_quality_control._apply_review(row, {
+            "relevance_status": "IRRELEVANT", "confidence": 0.99,
+            "model": "qwen/qwen3.8-27b", "topics": [], "document_type": "REPORT",
+        })
+        self.assertEqual(row["classification_status"], "NEEDS_REVIEW")
 
 
 class SourceHealthTests(unittest.TestCase):

@@ -100,6 +100,9 @@ def evaluate_handoff(output_dir: str | Path, *, package_root: str | Path | None 
     source_representation_missing = 0
     chapter_fields_in_handoff = 0
     invalid_fulltext_claim = 0
+    presentation_asset_count = 0
+    presentation_asset_sha_failures = 0
+    presentation_asset_provenance_missing = 0
     for row in manifest:
         status = str(row.get("paper_crawler_status") or "READY_FOR_HANDOFF").upper()
         if status != "READY_FOR_HANDOFF" or row.get("metadata_only_official_exception"):
@@ -119,6 +122,17 @@ def evaluate_handoff(output_dir: str | Path, *, package_root: str | Path | None 
         evidence = str(row.get("crawler_evidence_level") or row.get("evidence_level") or "").upper()
         if evidence in FORBIDDEN_CRAWLER_EVIDENCE_LEVELS:
             invalid_fulltext_claim += 1
+        for asset in row.get("presentation_assets") or []:
+            presentation_asset_count += 1
+            asset_rel = str(asset.get("path") or "")
+            if not asset_rel or asset_rel.startswith("/") or ".." in Path(asset_rel).parts:
+                presentation_asset_sha_failures += 1
+                continue
+            asset_path = package / asset_rel
+            if not asset_path.is_file() or hashlib.sha256(asset_path.read_bytes()).hexdigest() != str(asset.get("sha256") or ""):
+                presentation_asset_sha_failures += 1
+            if not (asset.get("source_url") and asset.get("deck_sha256") and asset.get("slide_number")):
+                presentation_asset_provenance_missing += 1
 
     for row in index:
         evidence = str(row.get("crawler_evidence_level") or row.get("evidence_level") or "").upper()
@@ -137,6 +151,10 @@ def evaluate_handoff(output_dir: str | Path, *, package_root: str | Path | None 
         blocking.append("chapter_fields_present_in_handoff")
     if invalid_fulltext_claim:
         blocking.append("invalid_papercrawler_fulltext_claim")
+    if presentation_asset_sha_failures:
+        blocking.append("presentation_asset_sha256_mismatch_or_missing")
+    if presentation_asset_provenance_missing:
+        blocking.append("presentation_asset_provenance_missing")
 
     if not contract or not REQUIRED_CONTRACT_KEYS.issubset(contract):
         blocking.append("handoff_contract_schema_invalid")
@@ -187,6 +205,9 @@ def evaluate_handoff(output_dir: str | Path, *, package_root: str | Path | None 
         "qwen_review_rate": qwen_rate,
         "sha_failures": sha_failures,
         "missing_provenance": missing_provenance,
+        "presentation_assets": presentation_asset_count,
+        "presentation_asset_sha_failures": presentation_asset_sha_failures,
+        "presentation_asset_provenance_missing": presentation_asset_provenance_missing,
         "blocking_issues": sorted(set(blocking)),
         "warnings": sorted(set(warnings)),
     }

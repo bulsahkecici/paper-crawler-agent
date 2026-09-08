@@ -29,7 +29,9 @@ TunnelBookAI owns full extraction, canonical Markdown, document structure, chunk
 
 Free scholarly discovery uses OpenAlex, Crossref, Europe PMC, DOAJ, arXiv, OpenAIRE, best-effort CORE, OAI-PMH, institutional public search, sitemaps, robots-compliant web discovery, and bounded Common Crawl discovery. Official sources are configured in `config/institutional_sources.yaml`; multilingual queries are in `config/topic_queries.yaml`.
 
-Presentation discovery is metadata-first and public-only. The named author or institution determines authority. When an original institutional copy is resolved, it is preferred and the platform URL remains discovery provenance. No login, paywall, CAPTCHA, anti-bot, or download-control bypass is permitted.
+Presentation discovery is metadata-first and public-only. Bounded adapters cover Zenodo, Figshare, SlideShare, Speaker Deck, SlideServe, and ResearchGate; institutional crawling also recognizes public `.ppt`, `.pptx`, and presentation-like PDF links. The named author or institution determines authority, while the hosting platform is retained only as discovery provenance. When an original institutional copy is resolved, it is preferred. No login, paywall, CAPTCHA, anti-bot, or download-control bypass is permitted.
+
+Public presentation originals are acquired as PPT, PPTX, or PDF. PPTX relationship data and PDF image objects are used to create provisional slide-image assets; when no original is exposed, public platform preview images may be retained instead. Every extracted asset carries its source URL, slide number, asset SHA-256, parent deck SHA-256, media type, dimensions, and extraction method. Binary legacy PPT files are preserved, but their embedded images require downstream rendering because this repository does not bundle a legacy PowerPoint renderer.
 
 PDF, HTML, PPT/PPTX, DOC/DOCX, XLS/XLSX, CSV, TXT, Markdown, and public ZIP originals are preserved. Optional HTML Markdown is only a lightweight snapshot; heavy canonical conversion belongs to TunnelBookAI.
 
@@ -41,7 +43,7 @@ python3 prepare_tunnelbookai_handoff.py \
   --embedding-server http://127.0.0.1:1234/v1 \
   --embedding-model text-embedding-baai-bge-m3-568m \
   --llm-server http://127.0.0.1:1234/v1 \
-  --llm-model qwen3.6-35b-a3b-mlx
+  --llm-model qwen3.8-27b-mlx
 ```
 
 Rules-only reclassification without redownloading:
@@ -73,6 +75,8 @@ tunel_makaleleri/exports/TunnelBookAI_Source_Pack/
 └── 99_audit/
 ```
 
-Each accepted source directory contains its original plus `metadata.json` and `classification.json`. The consumer manifest requires no book chapter and exposes relevance, topics, producer identity, acquisition, provenance, PaperCrawler state, and `tunnelbookai_status: NOT_INGESTED`.
+Each accepted source directory contains its original plus `metadata.json` and `classification.json`. Presentation directories can additionally contain `assets/slide_NNNN_image_NNN.ext`. The consumer manifest requires no book chapter and exposes relevance, topics, producer identity, acquisition, provenance, presentation metadata/assets, PaperCrawler state, and `tunnelbookai_status: NOT_INGESTED`.
+
+PaperCrawler verifies and exports these presentation assets as provisional source material. TunnelBookAI remains responsible for canonical slide rendering, OCR, layout interpretation, figure semantics, evidence approval, and citation.
 
 Topic coverage is informational and never an arbitrary GO target. TunnelBookAI determines missing book evidence and may send a discovery request without revealing a chapter number.

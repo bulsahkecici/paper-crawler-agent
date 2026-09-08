@@ -7,3 +7,4 @@ venv/
 tunel_makaleleri/*
 !tunel_makaleleri/.gitkeep
 timeout
+/archive/

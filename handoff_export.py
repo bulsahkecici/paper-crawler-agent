@@ -143,6 +143,7 @@ def export_handoff(
     status_counts: Counter[str] = Counter()
     route_counts: Counter[str] = Counter()
     copy_modes: Counter[str] = Counter()
+    asset_failures: Counter[str] = Counter()
     seen_ids: set[str] = set()
 
     for row in rows:
@@ -155,7 +156,12 @@ def export_handoff(
         recheck = relevance.evaluate(row, text_override=str(
             row.get("abstract") or row.get("classification_text") or row.get("light_pdf_text") or ""
         ))
-        row = {**row, **recheck}
+        row = {
+            **row,
+            **recheck,
+            "deterministic_relevance_status": recheck.get("relevance_status"),
+        }
+        row["effective_relevance_status"] = decision_router.effective_relevance_status(row)
         source_value = row.get("source_path")
         source_path = Path(str(source_value)).expanduser() if source_value else None
         source_exists = bool(source_path and source_path.is_file())
@@ -215,6 +221,40 @@ def export_handoff(
                         "copy_mode": raw_mode,
                     })
 
+        for index, asset in enumerate(row.get("presentation_assets") or [], 1):
+            if not isinstance(asset, dict) or not asset.get("path"):
+                asset_failures["missing_path"] += 1
+                continue
+            asset_source = Path(str(asset["path"])).expanduser()
+            if not asset_source.is_file():
+                asset_failures["source_missing"] += 1
+                continue
+            actual_asset_sha = _sha256(asset_source)
+            expected_asset_sha = str(asset.get("sha256") or "").strip().lower()
+            if expected_asset_sha and expected_asset_sha != actual_asset_sha:
+                asset_failures["sha256_mismatch"] += 1
+                continue
+            slide_number = int(asset.get("slide_number") or 0)
+            safe_name = f"slide_{slide_number:04d}_image_{index:03d}{asset_source.suffix.lower()}"
+            asset_dest = doc_dir / "assets" / safe_name
+            asset_mode = _link_or_copy(asset_source, asset_dest)
+            copy_modes[asset_mode] += 1
+            extra_assets.append({
+                "kind": "presentation_slide_image",
+                "path": str(asset_dest.relative_to(package_root)),
+                "sha256": actual_asset_sha,
+                "size_bytes": asset_source.stat().st_size,
+                "media_type": asset.get("media_type"),
+                "width": asset.get("width"),
+                "height": asset.get("height"),
+                "slide_number": slide_number or None,
+                "source_url": asset.get("source_url") or row.get("resolved_url") or row.get("source_url"),
+                "deck_sha256": asset.get("deck_sha256") or actual_sha,
+                "extraction_method": asset.get("extraction_method"),
+                "status": "PROVISIONAL",
+                "copy_mode": asset_mode,
+            })
+
         raw_dest_rel = next((a["path"] for a in extra_assets if a.get("kind") == "raw_html_snapshot"), None)
         source_representation = {
             "original_or_raw": raw_dest_rel or str(source_dest.relative_to(package_root)),
@@ -244,6 +284,8 @@ def export_handoff(
             "source_sha256": actual_sha or None,
             "crawler_evidence_level": row.get("crawler_evidence_level"),
             "extra_assets": extra_assets,
+            "presentation": row.get("presentation"),
+            "presentation_asset_extraction": row.get("presentation_asset_extraction"),
             "source_representation": source_representation,
             **provisional_block,
         })
@@ -284,11 +326,15 @@ def export_handoff(
             "source_url": row.get("source_url"),
             "landing_url": row.get("landing_url"),
             "pdf_url": row.get("pdf_url"),
+            "resolved_url": row.get("resolved_url"),
+            "download_url": (row.get("presentation") or {}).get("download_url") if isinstance(row.get("presentation"), dict) else None,
             "discovery_source": row.get("discovery_source"),
             "discovery_query": row.get("discovery_query"),
             "acquisition_status": row.get("acquisition_status"),
             "metadata_only": bool(row.get("metadata_only", False)),
             "extra_assets": extra_assets,
+            "presentation": row.get("presentation"),
+            "presentation_asset_extraction": row.get("presentation_asset_extraction"),
             "source_representation": source_representation,
             "paper_crawler_status": "READY_FOR_HANDOFF",
             "tunnelbookai_status": "NOT_INGESTED",
@@ -331,7 +377,7 @@ def export_handoff(
             "title": row.get("title"), "authors": row.get("authors") or [], "year": row.get("year"),
             "doi": row.get("doi"), "source_url": row.get("source_url"),
             "landing_url": row.get("landing_url"),
-            "resolved_url": row.get("pdf_url") or row.get("landing_url") or row.get("source_url"),
+            "resolved_url": row.get("resolved_url") or row.get("download_url") or row.get("pdf_url") or row.get("landing_url") or row.get("source_url"),
             "local_path": row.get("source_path"), "sha256": row.get("source_sha256"),
             "source_name": row.get("discovery_source"),
             "publisher_code": row.get("publisher_code"),
@@ -350,15 +396,22 @@ def export_handoff(
             "document_type": row.get("document_type"),
             "source_class": row.get("source_class"),
             "authority_tier": row.get("authority_tier"),
-            "relevance": {"status": row.get("relevance_status"), "score": row.get("tunnel_relevance_score", row.get("relevance_score"))},
+            "relevance": {
+                "status": row.get("effective_relevance_status") or row.get("relevance_status"),
+                "deterministic_status": row.get("deterministic_relevance_status"),
+                "llm_status": row.get("llm_relevance_status"),
+                "score": row.get("tunnel_relevance_score", row.get("relevance_score")),
+            },
             "topics": row.get("topics") or [],
+            "presentation": row.get("presentation"),
+            "presentation_assets": [asset for asset in row.get("extra_assets") or [] if asset.get("kind") == "presentation_slide_image"],
             "producer_identity": row.get("producer_identity") or {},
             "acquisition": {"status": row.get("acquisition_status"), "source_path": row.get("source_path"), "source_sha256": row.get("source_sha256")},
             "handoff_status": "READY_FOR_HANDOFF",
             "paper_crawler_status": "READY_FOR_HANDOFF",
             "tunnelbookai_status": "NOT_INGESTED",
             "metadata_only_official_exception": False,
-            "provenance": {key: row.get(key) for key in ("source_url", "landing_url", "pdf_url", "discovery_source", "discovery_query", "doi", "publisher") if row.get(key)},
+            "provenance": {key: row.get(key) for key in ("source_url", "landing_url", "pdf_url", "download_url", "resolved_url", "discovery_source", "discovery_query", "doi", "publisher") if row.get(key)},
         })
     _write_jsonl(registry_root / "handoff_manifest.jsonl", handoff_manifest)
 
@@ -393,6 +446,11 @@ def export_handoff(
         "status_counts": dict(status_counts),
         "route_counts": dict(route_counts),
         "copy_modes": dict(copy_modes),
+        "presentation_assets": sum(
+            1 for row in manifest for asset in row.get("extra_assets") or []
+            if asset.get("kind") == "presentation_slide_image"
+        ),
+        "presentation_asset_failures": dict(asset_failures),
         "rejections": queues[decision_router.AUTO_REJECT],
         "gate_meaning": "READY_FOR_HANDOFF means a safe, integrity-checked source package for TunnelBookAI ingest; it is not final evidence and not a canonical corpus. METADATA_REFERENCE records are excluded from READY_FOR_HANDOFF.",
     }
@@ -438,6 +496,8 @@ def export_handoff(
                 "source acquisition",
                 "source integrity (byte SHA256)",
                 "source metadata preservation",
+                "public presentation discovery and original deck acquisition",
+                "provisional slide-image asset extraction with per-slide provenance",
                 "bibliographic dedup",
                 "provisional relevance",
                 "source classification (relevance, document type, producer, authority and broad topics)",
@@ -448,7 +508,7 @@ def export_handoff(
                 "full content conversion",
                 "Docling processing",
                 "page snapshots",
-                "embedded image extraction",
+                "canonical embedded image extraction and slide rendering",
                 "OCR/vision",
                 "table extraction",
                 "metadata enrichment",
@@ -465,6 +525,7 @@ def export_handoff(
                 "crawler_evidence_level": "PaperCrawler evidence vocabulary (ABSTRACT, LIGHT_PDF_TEXT, WEB_SNAPSHOT_TEXT, TITLE_METADATA_ONLY, ORIGINAL_ACQUIRED). Never FULL_TEXT or PDF_EXTRACT.",
                 "topics": "Stable broad source-level hints; never book chapter placement.",
                 "source_representation": "original_or_raw is the authoritative captured source; crawler_normalized is PROVISIONAL and never the final corpus Markdown.",
+                "presentation_assets": "Provisional extracted slide images with slide number, source URL, deck SHA256 and asset SHA256; TunnelBookAI must revalidate and canonically extract/render.",
                 "legacy": "Deprecated historical book-section fields, preserved for audit and ignored by all decisions.",
             },
             "state_machine": {
@@ -494,7 +555,7 @@ def export_handoff(
             "reclassify_queue": "99_audit/reclassify_queue.jsonl",
             "metadata_references": "99_audit/metadata_references.jsonl",
             "rejected_manifest": "99_audit/rejected_manifest.jsonl",
-            "provenance_fields": ["source_url", "landing_url", "pdf_url", "discovery_source", "discovery_query", "doi", "publisher"],
+            "provenance_fields": ["source_url", "landing_url", "pdf_url", "download_url", "resolved_url", "discovery_source", "discovery_query", "doi", "publisher"],
             "consumer_rule": "TunnelBookAI must revalidate SHA256, then perform full-content conversion, quality audit, final section classification and evidence gating before corpus ingest. PaperCrawler never writes a canonical corpus.",
         }, ensure_ascii=False, indent=2), encoding="utf-8"
     )

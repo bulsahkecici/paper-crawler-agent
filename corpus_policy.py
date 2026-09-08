@@ -8,7 +8,7 @@ from typing import Any
 
 import yaml
 
-AUTO_HANDOFF = {"LLM_ACCEPTED", "ACCEPT_WITH_AUDIT", "AUTO_ACCEPT"}
+AUTO_HANDOFF = {"LLM_ACCEPTED", "ACCEPT_WITH_AUDIT", "AUTO_ACCEPT", "MANUAL_ACCEPTED"}
 REVIEW_STATUSES = {"NEEDS_REVIEW", "LOCAL_LLM_REVIEW"}
 REJECT_STATUSES = {
     "REJECT_IRRELEVANT", "REJECT_NONCONTENT_PAGE", "REJECT_NAVIGATION",
@@ -44,6 +44,9 @@ DOCUMENT_TYPE_MAP = {
     "WEB_PAGE": "institutional_webpage", "NEWS": "news", "BOOK": "book",
     "BOOK_CHAPTER": "book_chapter", "PREPRINT": "journal_article",
     "DATASET": "dataset", "MANUAL": "manual", "MANUAL_SECTION": "manual_section",
+    "PRESENTATION": "presentation", "OFFICIAL_PRESENTATION": "presentation",
+    "ACADEMIC_PRESENTATION": "presentation", "CONFERENCE_PRESENTATION": "presentation",
+    "TECHNICAL_PRESENTATION": "presentation",
 }
 
 

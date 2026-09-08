@@ -21,7 +21,7 @@ METADATA_REFERENCE = "METADATA_REFERENCE"
 
 OFFICIAL_SOURCE_CLASSES = {"TR_OFFICIAL", "INT_OFFICIAL", "FOREIGN_GOVERNMENT", "ROAD_AUTHORITY", "TRANSPORT_AUTHORITY", "INTERNATIONAL_OFFICIAL", "STANDARD_BODY"}
 
-ACCEPTED_CLASSIFICATIONS = {"AUTO_ACCEPT", "ACCEPT_WITH_AUDIT", "LLM_ACCEPTED"}
+ACCEPTED_CLASSIFICATIONS = {"AUTO_ACCEPT", "ACCEPT_WITH_AUDIT", "LLM_ACCEPTED", "MANUAL_ACCEPTED"}
 REVIEW_CLASSIFICATIONS = {"NEEDS_REVIEW", "LOCAL_LLM_REVIEW"}
 RETRYABLE_ACQUISITION = {
     "SOURCE_MISSING", "METADATA_ONLY", "HTTP_403", "HTTP_404", "HTTP_429",
@@ -71,21 +71,40 @@ def is_metadata_reference(record: dict[str, Any]) -> bool:
     return official or bibliographic
 
 
+def effective_relevance_status(record: dict[str, Any]) -> str:
+    """Use a successful, high-confidence local-LLM review without hiding rules."""
+    deterministic = str(record.get("relevance_status") or "").upper()
+    review = record.get("llm_review") if isinstance(record.get("llm_review"), dict) else {}
+    llm = str(record.get("llm_relevance_status") or review.get("relevance_status") or "").upper()
+    status = str(record.get("classification_status") or "").upper()
+    confidence = float(record.get("classification_confidence") or review.get("confidence") or 0.0)
+    manual = str(record.get("manual_relevance_status") or "").upper()
+    if status == "MANUAL_ACCEPTED" and manual in {"STRONG", "PROBABLE"}:
+        return manual
+    if status == "LLM_ACCEPTED" and review.get("used") and confidence >= 0.72 and llm in {"STRONG", "PROBABLE"}:
+        return llm
+    return deterministic
+
+
 def route(record: dict[str, Any], *, source_exists: bool | None = None, sha_valid: bool | None = None) -> dict[str, Any]:
     status = str(record.get("classification_status") or "").upper()
-    relevance = str(record.get("relevance_status") or "").upper()
+    relevance = effective_relevance_status(record)
     acquisition = str(record.get("acquisition_status") or "").upper()
     document_type = str(record.get("normalized_document_type") or corpus_policy.normalized_document_type(record)).lower()
     confidence = float(record.get("classification_confidence") or 0.0)
     path = _source_path(record)
     exists = bool(path and path.is_file()) if source_exists is None else source_exists
+    manual_action = str(record.get("manual_review_decision") or "").upper()
 
     metadata_reference = is_metadata_reference(record)
     acquisition_target = bool(record.get("pdf_url") or record.get("source_url") or record.get("landing_url"))
-    acquirable = acquisition_target and not record.get("metadata_only")
+    llm_promoted = relevance in {"STRONG", "PROBABLE"} and status == "LLM_ACCEPTED"
+    acquirable = acquisition_target and (not record.get("metadata_only") or llm_promoted)
 
     if sha_valid is False:
         return _decision(AUTO_REJECT, "sha256_mismatch", "restore or reacquire the intact source")
+    if manual_action == "RETRY_ACQUISITION":
+        return _decision(RETRY_ACQUISITION, "manual_acquisition_retry", "retry bounded acquisition requested by reviewer")
     if status in HARD_REJECT_CLASSIFICATIONS or relevance == "IRRELEVANT":
         return _decision(AUTO_REJECT, "explicit_irrelevant_or_noncontent", "retain provenance in rejected manifest")
     if acquisition in HARD_REJECT_ACQUISITION:
@@ -94,6 +113,17 @@ def route(record: dict[str, Any], *, source_exists: bool | None = None, sha_vali
         if not exists and metadata_reference:
             return _decision(METADATA_REFERENCE, "acquisition_failed_reference_retained", "treat as REFERENCE_ONLY; do not retry automatically")
         return _decision(AUTO_REJECT, "hard_acquisition_or_security_failure", "retain failure details; do not retry automatically")
+    if status in REVIEW_CLASSIFICATIONS:
+        ambiguous = (
+            document_type == "unknown"
+            or str(record.get("source_class") or "UNKNOWN").upper() == "UNKNOWN"
+            or not str(record.get("authority_tier") or "").strip()
+            or relevance in {"", "WEAK"}
+            or record.get("relevance_conflict")
+        )
+        if ambiguous:
+            return _decision(RECLASSIFY, "source_classification_ambiguous", "review relevance, document type, source identity, or authority")
+        return _decision(MANUAL_REVIEW, "unresolved_source_classification", "human source-level classification review")
     if relevance in {"", "WEAK"}:
         if record.get("rule_embedding_disagreement") or record.get("relevance_conflict"):
             return _decision(RECLASSIFY, "relevance_classifier_conflict", "recompute source-level relevance")
@@ -113,17 +143,6 @@ def route(record: dict[str, Any], *, source_exists: bool | None = None, sha_vali
         if relevance in {"STRONG", "PROBABLE"}:
             return _decision(RETRY_ACQUISITION, "source_missing", "retry bounded acquisition or official-page snapshot")
         return _decision(AUTO_REJECT, "source_missing_and_not_relevant", "retain metadata in rejected manifest")
-    if status in REVIEW_CLASSIFICATIONS:
-        ambiguous = (
-            document_type == "unknown"
-            or str(record.get("source_class") or "UNKNOWN").upper() == "UNKNOWN"
-            or not str(record.get("authority_tier") or "").strip()
-            or relevance in {"", "WEAK"}
-            or record.get("relevance_conflict")
-        )
-        if ambiguous:
-            return _decision(RECLASSIFY, "source_classification_ambiguous", "review relevance, document type, source identity, or authority")
-        return _decision(MANUAL_REVIEW, "unresolved_source_classification", "human source-level classification review")
     if status not in ACCEPTED_CLASSIFICATIONS:
         return _decision(MANUAL_REVIEW, "unknown_classification_status", "inspect unusual classification metadata")
     if document_type == "unknown":
@@ -152,6 +171,9 @@ def queue_entry(record: dict[str, Any], routed: dict[str, str]) -> dict[str, Any
         "authority_tier": record.get("authority_tier"),
         "relevance_score": record.get("tunnel_relevance_score", record.get("relevance_score")),
         "relevance_status": record.get("relevance_status"),
+        "effective_relevance_status": effective_relevance_status(record),
+        "llm_relevance_status": record.get("llm_relevance_status"),
+        "llm_review": record.get("llm_review") or {},
         "topics": record.get("topics") or [],
         "producer": record.get("producer") or {},
         "classification_status": record.get("classification_status"),

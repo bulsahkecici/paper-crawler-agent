@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>PaperCrawler · Manuel İnceleme</title><link rel="stylesheet" href="/styles.css"><link rel="stylesheet" href="/downloads.css">
+</head>
+<body>
+  <header><div><p class="eyebrow">PAPERCRAWLER</p><h1>Manuel İnceleme Masası</h1></div><div class="header-actions"><a class="ghost nav-link" href="/downloads">İndirme masası</a><button id="apply" class="ghost">Kararları uygula</button><span id="saveState">Hazır</span></div></header>
+  <section id="stats" class="stats"></section>
+  <main>
+    <aside>
+      <label class="search"><span>Ara</span><input id="search" placeholder="Başlık, DOI, konu…"></label>
+      <div class="filters"><button data-state="all" class="active">Tümü</button><button data-state="pending">Bekleyen</button><button data-state="decided">Karar verilen</button></div>
+      <div id="list" class="list"></div><button id="more" class="more">Daha fazla göster</button>
+    </aside>
+    <article id="detail" class="detail"><div class="empty">Bir kayıt seçin</div></article>
+  </main>
+  <template id="detailTemplate">
+    <div class="record-head"><div><div class="chips"></div><h2></h2><p class="identity"></p></div><span class="counter"></span></div>
+    <div class="meta"></div>
+    <div class="workspace"><section><h3>Kanıt ve sınıflandırma</h3><div class="evidence"></div></section><section class="source-panel"><div class="source-title"><h3>Kaynak önizleme</h3><a target="_blank" rel="noreferrer">Orijinali aç ↗</a></div><iframe></iframe><div class="no-preview">Yerel önizleme yok. Metadata ile karar verin veya yeniden indirmeyi seçin.</div></section></div>
+    <section class="decision"><div class="decision-grid"><button data-decision="ACCEPT" class="accept"><b>A</b> Kabul</button><button data-decision="REJECT" class="reject"><b>R</b> Reddet</button><button data-decision="RETRY_ACQUISITION" class="retry"><b>T</b> Yeniden indir</button><button data-decision="KEEP_REVIEW" class="keep"><b>K</b> İncelemede tut</button></div><div class="fields"><label>İlgi düzeyi<select id="relevance"><option>PROBABLE</option><option>STRONG</option><option>WEAK</option><option>IRRELEVANT</option></select></label><label>Belge türü<input id="docType" placeholder="JOURNAL_ARTICLE"></label><label class="notes">Not<textarea id="notes" rows="2" placeholder="Kararın kısa gerekçesi…"></textarea></label></div><p class="shortcuts">J/↓ sonraki · K/↑ önceki · A kabul · R ret · T yeniden indir · Shift+K incelemede tut</p></section>
+  </template>
+  <script src="/app.js"></script>
+</body></html>

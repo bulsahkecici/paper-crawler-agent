@@ -281,11 +281,11 @@ def _pick_qwen_model(model_ids: list[str], requested: str | None) -> str:
         for mid in ids:
             if lowered in mid.lower():
                 return mid
-    for needle in ("qwen3.6", "qwen3-6", "qwen3.5", "qwen3"):
+    for needle in ("qwen3.8", "qwen3-8", "qwen3"):
         for mid in ids:
             if needle in mid.lower():
                 return mid
-    return ids[0] if ids else (requested or "qwen3.6")
+    return ids[0] if ids else (requested or "qwen3.8")
 
 
 def detect_local_llm(

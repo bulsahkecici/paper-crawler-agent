@@ -9,6 +9,7 @@ policy:
   request_timeout_seconds: 25
   max_web_bytes: 10485760
   max_pdf_bytes: 83886080
+  max_presentation_bytes: 157286400
   crawl_delay_seconds: 0.35
   max_pages_per_seed: 30
   max_depth: 2

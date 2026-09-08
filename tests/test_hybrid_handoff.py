@@ -41,6 +41,14 @@ class CountingLlmClient(FakeLlmClient):
         return super().chat_json(model, system, user)
 
 
+class BatchEmbeddingClient(FakeEmbeddingClient):
+    def __init__(self) -> None:
+        self.batch_calls = 0
+    def embeddings(self, model: str, texts: list[str]) -> list[list[float]]:
+        self.batch_calls += 1
+        return [self.embedding(model, text) for text in texts]
+
+
 class HybridClassificationTests(unittest.TestCase):
     def test_bge_m3_is_the_configured_default(self) -> None:
         config = hybrid._load_yaml("classification_policy.yaml")["embedding"]
@@ -88,7 +96,7 @@ class HybridClassificationTests(unittest.TestCase):
             embedding_client=FakeEmbeddingClient(),
             embedding_model="text-embedding-baai-bge-m3-568m",
             llm_client=FakeLlmClient(),
-            llm_model="qwen3.6-35b-a3b-mlx",
+            llm_model="qwen3.8-27b-mlx",
         )
         self.assertNotIn("primary_section", result)
         self.assertTrue(set(result["topics"]) <= set(hybrid.base.TOPIC_TERMS))
@@ -107,10 +115,36 @@ class HybridClassificationTests(unittest.TestCase):
             embedding_client=FakeEmbeddingClient(),
             embedding_model="text-embedding-baai-bge-m3-568m",
             llm_client=llm,
-            llm_model="qwen3.6-35b-a3b-mlx",
+            llm_model="qwen3.8-27b-mlx",
         )
         self.assertFalse(result["llm_review"]["used"])
         self.assertEqual(llm.calls, 0)
+
+    def test_embeddings_are_batched_and_reused_from_exact_cache(self) -> None:
+        client = BatchEmbeddingClient()
+        cache = hybrid.EmbeddingCache(Path(tempfile.mkdtemp()) / "embeddings.sqlite3")
+        texts = ["road tunnel", "maintenance", "road tunnel"]
+        first, errors = hybrid.cached_embeddings(client, "model-a", texts, batch_size=8, cache=cache)
+        self.assertEqual(client.batch_calls, 1)
+        self.assertEqual(errors, [None, None, None])
+        second, _ = hybrid.cached_embeddings(client, "model-a", texts, batch_size=8, cache=cache)
+        self.assertEqual(client.batch_calls, 1)
+        self.assertEqual(first, second)
+        cache.close()
+
+    def test_qwen_prompt_has_only_source_level_output_contract(self) -> None:
+        captured = {}
+        class Client(FakeLlmClient):
+            def chat_json(self, model: str, system: str, user: str) -> dict:
+                captured.update(system=system, user=user)
+                return super().chat_json(model, system, user)
+        hybrid._review({"title": "Weak tunnel source"}, Client(), "qwen/qwen3.8-27b")
+        prompt = (captured["system"] + captured["user"]).casefold()
+        self.assertNotIn("primary_section", prompt)
+        self.assertNotIn("book_sections", prompt)
+        self.assertNotIn("chapter", prompt)
+        self.assertNotIn('"book"', prompt)
+        self.assertIn("reason_code", prompt)
 
 
 class HandoffTests(unittest.TestCase):

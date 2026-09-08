@@ -92,13 +92,13 @@ def _append_catalog(output_dir: str | Path | None, rows: list[dict[str, Any]]) -
             continue
         # Prefer acquired/richer records over metadata-only duplicates.
         rank = (
-            row.get("acquisition_status") in {"DOWNLOADED_PDF", "SNAPSHOTTED_WEB"},
+            row.get("acquisition_status") in {"DOWNLOADED_PDF", "DOWNLOADED_PRESENTATION", "SNAPSHOTTED_WEB"},
             not bool(row.get("metadata_only")),
             bool(row.get("source_url") or row.get("landing_url")),
             len(str(row.get("abstract") or "")),
         )
         prev_rank = (
-            prev.get("acquisition_status") in {"DOWNLOADED_PDF", "SNAPSHOTTED_WEB"},
+            prev.get("acquisition_status") in {"DOWNLOADED_PDF", "DOWNLOADED_PRESENTATION", "SNAPSHOTTED_WEB"},
             not bool(prev.get("metadata_only")),
             bool(prev.get("source_url") or prev.get("landing_url")),
             len(str(prev.get("abstract") or "")),

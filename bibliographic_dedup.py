@@ -62,22 +62,75 @@ def duplicate_reason(left: dict[str, Any], right: dict[str, Any]) -> str | None:
 def canonicalize(records: Iterable[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, int]]:
     canonical: list[dict[str, Any]] = []
     counts: dict[str, int] = {}
+    # Exact identifiers and the conservative title/year/author gates let us
+    # shortlist every pair that duplicate_reason() could possibly accept.  The
+    # final predicate and earliest-canonical-record rule remain unchanged.
+    indexes: dict[str, dict[Any, set[int]]] = {
+        name: {} for name in ("doi", "sha", "url", "title_year", "title_author", "year_author")
+    }
+    indexed_keys: list[dict[str, set[Any]]] = []
+
+    def keys_for(record: dict[str, Any]) -> dict[str, set[Any]]:
+        doi = harvest.normalize_doi(record.get("doi"))
+        sha = str(record.get("source_sha256") or "").lower()
+        url = canonical_url(record.get("resolved_url") or record.get("source_url") or record.get("pdf_url") or record.get("landing_url"))
+        title = normalized_title(record.get("title"))
+        year = str(record.get("year") or "")[:4]
+        authors = _authors(record)
+        return {
+            "doi": {doi} if doi else set(),
+            "sha": {sha} if sha else set(),
+            "url": {url} if url else set(),
+            "title_year": {(title, year)} if title and year else set(),
+            "title_author": {(title, author) for author in authors} if title else set(),
+            "year_author": {(year, author) for author in authors} if year else set(),
+        }
+
+    def add_to_indexes(position: int, keys: dict[str, set[Any]]) -> None:
+        for name, values in keys.items():
+            for value in values:
+                indexes[name].setdefault(value, set()).add(position)
+
+    def remove_from_indexes(position: int, keys: dict[str, set[Any]]) -> None:
+        for name, values in keys.items():
+            for value in values:
+                positions = indexes[name].get(value)
+                if positions is not None:
+                    positions.discard(position)
+                    if not positions:
+                        indexes[name].pop(value, None)
+
     for raw in records:
         record = dict(raw)
-        match = next(((existing, duplicate_reason(existing, record)) for existing in canonical if duplicate_reason(existing, record)), None)
+        record_keys = keys_for(record)
+        candidates: set[int] = set()
+        for name, values in record_keys.items():
+            for value in values:
+                candidates.update(indexes[name].get(value, ()))
+        match = None
+        for position in sorted(candidates):
+            reason = duplicate_reason(canonical[position], record)
+            if reason:
+                match = canonical[position], reason, position
+                break
         if not match:
             canonical.append(record)
+            indexed_keys.append(record_keys)
+            add_to_indexes(len(canonical) - 1, record_keys)
             continue
-        existing, reason = match
+        existing, reason, position = match
         assert reason is not None
         counts[reason] = counts.get(reason, 0) + 1
         existing.setdefault("duplicate_sources", []).append(record.get("discovery_source") or record.get("source"))
         existing.setdefault("duplicate_urls", []).extend(filter(None, [record.get("source_url"), record.get("pdf_url"), record.get("landing_url")]))
         existing.setdefault("duplicate_reasons", []).append(reason)
         if len(str(record.get("abstract") or "")) > len(str(existing.get("abstract") or "")):
+            remove_from_indexes(position, indexed_keys[position])
             for key, value in record.items():
                 if value not in (None, "", [], {}):
                     existing[key] = value
+            indexed_keys[position] = keys_for(existing)
+            add_to_indexes(position, indexed_keys[position])
     for record in canonical:
         seed = harvest.normalize_doi(record.get("doi")) or str(record.get("source_sha256") or "") or normalized_title(record.get("title"))
         record["canonical_id"] = "CAN_" + hashlib.sha256(seed.encode("utf-8")).hexdigest()[:20].upper()
