@@ -2,8 +2,8 @@
 """Create a self-contained TunnelBookAI source handoff package.
 
 The exporter never mutates canonical PaperCrawler sources. It validates the
-classification gate, source existence and SHA256, then hardlinks (or copies)
-accepted sources into deterministic source-type folders with metadata and
+classification gate, source existence and SHA256, then copies accepted sources
+into deterministic source-type folders with metadata and
 classification sidecars. Discovery provenance and optional raw web snapshots are
 preserved for TunnelBookAI auditability.
 """
@@ -14,9 +14,12 @@ import argparse
 import csv
 import hashlib
 import json
-import os
 import shutil
+import stat
+import subprocess
+import uuid
 from collections import Counter
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -62,16 +65,71 @@ def _safe_route(route_path: str) -> Path:
     return route
 
 
-def _link_or_copy(src: Path, dest: Path) -> str:
+def _copy_immutable(src: Path, dest: Path) -> str:
+    """Create a byte-identical release copy that cannot track later source edits."""
     dest.parent.mkdir(parents=True, exist_ok=True)
     if dest.exists():
-        dest.unlink()
+        raise FileExistsError(f"Release artifact already exists: {dest}")
+    temporary = dest.with_name(f".{dest.name}.{uuid.uuid4().hex}.tmp")
+    shutil.copy2(src, temporary)
+    temporary.replace(dest)
+    dest.chmod(dest.stat().st_mode & ~stat.S_IWUSR & ~stat.S_IWGRP & ~stat.S_IWOTH)
+    return "copy"
+
+
+def _git(*args: str) -> str | None:
     try:
-        os.link(src, dest)
-        return "hardlink"
-    except OSError:
-        shutil.copy2(src, dest)
-        return "copy"
+        return subprocess.run(
+            ["git", "-C", str(ROOT), *args], check=True, capture_output=True, text=True,
+        ).stdout.strip() or None
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def _producer_metadata(manifest_sha256: str, *, generated_at: str | None = None) -> dict[str, Any]:
+    timestamp = generated_at or datetime.now(timezone.utc).isoformat(timespec="seconds")
+    try:
+        date = datetime.fromisoformat(timestamp.replace("Z", "+00:00")).strftime("%Y%m%d")
+    except ValueError:
+        date = datetime.now(timezone.utc).strftime("%Y%m%d")
+    commit = _git("rev-parse", "--short=12", "HEAD") or "unknown"
+    version_path = ROOT / "VERSION"
+    version = version_path.read_text(encoding="utf-8").strip() if version_path.is_file() else "unknown"
+    dirty = bool(_git("status", "--porcelain"))
+    release_id = f"PC_RELEASE_{date}_{commit}_{manifest_sha256[:12]}"
+    return {
+        "schema_version": "1.0",
+        "release_id": release_id,
+        "producer": "paper-crawler-agent",
+        "producer_version": version,
+        "producer_git_commit": commit,
+        "producer_git_dirty": dirty,
+        "generated_at": timestamp,
+        "manifest_path": "00_registry/handoff_manifest.jsonl",
+        "manifest_sha256": manifest_sha256,
+    }
+
+
+def _write_checksums(package_root: Path, paths: list[str]) -> Path:
+    checksums_path = package_root / "00_registry" / "checksums.sha256"
+    unique = sorted({path for path in paths if path and path != "00_registry/checksums.sha256"})
+    with checksums_path.open("w", encoding="utf-8") as handle:
+        for relative in unique:
+            target = package_root / relative
+            if not target.is_file():
+                raise FileNotFoundError(f"Checksum target missing: {relative}")
+            handle.write(f"{_sha256(target)}  {relative}\n")
+    return checksums_path
+
+
+def _make_release_readonly(package_root: Path) -> None:
+    paths = list(package_root.rglob("*"))
+    for path in paths:
+        if path.is_file():
+            path.chmod(path.stat().st_mode & ~stat.S_IWUSR & ~stat.S_IWGRP & ~stat.S_IWOTH)
+    for path in sorted((path for path in paths if path.is_dir()), key=lambda item: len(item.parts), reverse=True):
+        path.chmod(path.stat().st_mode & ~stat.S_IWUSR & ~stat.S_IWGRP & ~stat.S_IWOTH)
+    package_root.chmod(package_root.stat().st_mode & ~stat.S_IWUSR & ~stat.S_IWGRP & ~stat.S_IWOTH)
 
 
 def _read_jsonl(path: Path) -> list[dict[str, Any]]:
@@ -118,6 +176,7 @@ def export_handoff(
     output_dir: str | Path | None = None,
     *,
     destination: str | Path | None = None,
+    generated_at: str | None = None,
 ) -> dict[str, Any]:
     if output_dir is not None:
         harvest.set_output_dir(output_dir)
@@ -127,6 +186,8 @@ def export_handoff(
     package_name = str(policy.get("package_name") or "TunnelBookAI_Source_Pack")
 
     package_root = Path(destination).resolve() if destination else (source_root / "exports" / package_name)
+    if package_root.exists() and any(package_root.iterdir()):
+        raise FileExistsError(f"Refusing to overwrite an existing handoff package: {package_root}")
     originals_root = package_root / "01_originals"
     registry_root = package_root / "00_registry"
     audit_root = package_root / "99_audit"
@@ -175,7 +236,34 @@ def export_handoff(
             queues[routed["decision"]].append(decision_router.queue_entry(row, routed))
             continue
 
-        document_id = _stable_document_id(row, source_path)
+        raw_html: Path | None = None
+        raw_html_sha = ""
+        raw_html_value = row.get("raw_html_path")
+        if raw_html_value:
+            raw_html = Path(str(raw_html_value)).expanduser()
+            if not raw_html.is_file():
+                rejected = decision_router._decision(
+                    decision_router.AUTO_REJECT,
+                    "authoritative_raw_html_missing",
+                    "restore or reacquire the raw HTML before handoff",
+                )
+                queues[decision_router.AUTO_REJECT].append(decision_router.queue_entry(row, rejected))
+                continue
+            raw_html_sha = _sha256(raw_html)
+            expected_raw_sha = str(row.get("raw_html_sha256") or "").strip().lower()
+            if expected_raw_sha and expected_raw_sha != raw_html_sha:
+                rejected = decision_router._decision(
+                    decision_router.AUTO_REJECT,
+                    "authoritative_raw_html_sha256_mismatch",
+                    "restore or reacquire the intact raw HTML before handoff",
+                )
+                queues[decision_router.AUTO_REJECT].append(decision_router.queue_entry(row, rejected))
+                continue
+
+        authoritative_source = raw_html or source_path
+        authoritative_sha = raw_html_sha or actual_sha
+        identity_row = {**row, "source_sha256": authoritative_sha}
+        document_id = _stable_document_id(identity_row, authoritative_source)
         if document_id in seen_ids:
             duplicate = decision_router._decision(decision_router.AUTO_REJECT, "duplicate_document_id", "retain one canonical source")
             queues[decision_router.AUTO_REJECT].append(decision_router.queue_entry(row, duplicate))
@@ -200,26 +288,22 @@ def export_handoff(
         doc_dir.mkdir(parents=True, exist_ok=True)
         suffix = source_path.suffix.lower() or ".bin"
         source_dest = doc_dir / ("source" + suffix)
-        copy_mode = _link_or_copy(source_path, source_dest)
+        copy_mode = _copy_immutable(source_path, source_dest)
         copy_modes[copy_mode] += 1
 
         extra_assets: list[dict[str, Any]] = []
-        raw_html_value = row.get("raw_html_path")
-        if raw_html_value:
-            raw_html = Path(str(raw_html_value)).expanduser()
-            if raw_html.exists() and raw_html.is_file():
-                expected_raw_sha = str(row.get("raw_html_sha256") or "").strip().lower()
-                actual_raw_sha = _sha256(raw_html)
-                if not expected_raw_sha or expected_raw_sha == actual_raw_sha:
-                    raw_dest = doc_dir / "source_raw.html"
-                    raw_mode = _link_or_copy(raw_html, raw_dest)
-                    copy_modes[raw_mode] += 1
-                    extra_assets.append({
-                        "kind": "raw_html_snapshot",
-                        "path": str(raw_dest.relative_to(package_root)),
-                        "sha256": actual_raw_sha,
-                        "copy_mode": raw_mode,
-                    })
+        raw_dest: Path | None = None
+        raw_mode: str | None = None
+        if raw_html is not None:
+            raw_dest = doc_dir / "source_raw.html"
+            raw_mode = _copy_immutable(raw_html, raw_dest)
+            copy_modes[raw_mode] += 1
+            extra_assets.append({
+                "kind": "raw_html_snapshot",
+                "path": str(raw_dest.relative_to(package_root)),
+                "sha256": raw_html_sha,
+                "copy_mode": raw_mode,
+            })
 
         for index, asset in enumerate(row.get("presentation_assets") or [], 1):
             if not isinstance(asset, dict) or not asset.get("path"):
@@ -237,7 +321,7 @@ def export_handoff(
             slide_number = int(asset.get("slide_number") or 0)
             safe_name = f"slide_{slide_number:04d}_image_{index:03d}{asset_source.suffix.lower()}"
             asset_dest = doc_dir / "assets" / safe_name
-            asset_mode = _link_or_copy(asset_source, asset_dest)
+            asset_mode = _copy_immutable(asset_source, asset_dest)
             copy_modes[asset_mode] += 1
             extra_assets.append({
                 "kind": "presentation_slide_image",
@@ -255,10 +339,14 @@ def export_handoff(
                 "copy_mode": asset_mode,
             })
 
-        raw_dest_rel = next((a["path"] for a in extra_assets if a.get("kind") == "raw_html_snapshot"), None)
+        source_dest_rel = str(source_dest.relative_to(package_root))
+        raw_dest_rel = str(raw_dest.relative_to(package_root)) if raw_dest is not None else None
+        authoritative_rel = raw_dest_rel or source_dest_rel
         source_representation = {
-            "original_or_raw": raw_dest_rel or str(source_dest.relative_to(package_root)),
-            "crawler_normalized": None,
+            "original_or_raw": authoritative_rel,
+            "original_or_raw_sha256": authoritative_sha,
+            "crawler_normalized": source_dest_rel if raw_dest_rel else None,
+            "crawler_normalized_sha256": actual_sha if raw_dest_rel else None,
             "crawler_normalized_status": "PROVISIONAL",
             "note": "TunnelBookAI produces the final normalized Markdown during ingest.",
         }
@@ -280,8 +368,8 @@ def export_handoff(
             "source_kind": "EXTERNAL_DISCOVERY",
             "paper_crawler_status": "READY_FOR_HANDOFF",
             "tunnelbookai_status": "NOT_INGESTED",
-            "handoff_source_path": str(source_dest.relative_to(package_root)),
-            "source_sha256": actual_sha or None,
+            "handoff_source_path": authoritative_rel,
+            "source_sha256": authoritative_sha or None,
             "crawler_evidence_level": row.get("crawler_evidence_level"),
             "extra_assets": extra_assets,
             "presentation": row.get("presentation"),
@@ -294,7 +382,7 @@ def export_handoff(
         )
 
         metadata = {
-            "schema_version": "2.0",
+            "schema_version": "2.1",
             "document_id": document_id,
             "canonical_id": row.get("canonical_id") or "CAN_" + document_id.removeprefix("PC_"),
             "canonical_hint_id": row.get("canonical_id") or "CAN_" + document_id.removeprefix("PC_"),
@@ -321,8 +409,8 @@ def export_handoff(
             "classification_confidence": row.get("classification_confidence"),
             "classification_status": status,
             "route_path": str(route),
-            "source_sha256": actual_sha or None,
-            "source_filename": source_path.name if source_path else None,
+            "source_sha256": authoritative_sha or None,
+            "source_filename": authoritative_source.name if authoritative_source else None,
             "source_url": row.get("source_url"),
             "landing_url": row.get("landing_url"),
             "pdf_url": row.get("pdf_url"),
@@ -349,10 +437,10 @@ def export_handoff(
 
         manifest_row = {
             **metadata,
-            "source_path": str(source_dest.relative_to(package_root)) if source_dest else None,
+            "source_path": authoritative_rel,
             "classification_path": str((doc_dir / "classification.json").relative_to(package_root)),
             "metadata_path": str((doc_dir / "metadata.json").relative_to(package_root)),
-            "copy_mode": copy_mode,
+            "copy_mode": raw_mode or copy_mode,
         }
         manifest.append(manifest_row)
         status_counts[status] += 1
@@ -367,7 +455,7 @@ def export_handoff(
     for row in manifest:
         canonical_hint = row.get("canonical_hint_id") or row.get("canonical_id") or "CAN_" + str(row.get("source_sha256") or "")[:20].upper()
         handoff_manifest.append({
-            "schema_version": "2.0",
+            "schema_version": "2.1",
             "document_id": row.get("document_id"),
             "canonical_id": canonical_hint,
             "canonical_hint_id": canonical_hint,
@@ -413,25 +501,24 @@ def export_handoff(
             "metadata_only_official_exception": False,
             "provenance": {key: row.get(key) for key in ("source_url", "landing_url", "pdf_url", "download_url", "resolved_url", "discovery_source", "discovery_query", "doi", "publisher") if row.get(key)},
         })
-    _write_jsonl(registry_root / "handoff_manifest.jsonl", handoff_manifest)
-
-    checksums_path = registry_root / "checksums.sha256"
-    with checksums_path.open("w", encoding="utf-8") as handle:
-        for row in manifest:
-            if row.get("source_sha256") and row.get("source_path"):
-                handle.write(f"{row['source_sha256']}  {row['source_path']}\n")
-            for asset in row.get("extra_assets") or []:
-                if asset.get("sha256") and asset.get("path"):
-                    handle.write(f"{asset['sha256']}  {asset['path']}\n")
+    handoff_manifest_path = registry_root / "handoff_manifest.jsonl"
+    _write_jsonl(handoff_manifest_path, handoff_manifest)
+    manifest_sha256 = _sha256(handoff_manifest_path)
+    release_metadata = _producer_metadata(manifest_sha256, generated_at=generated_at)
+    (registry_root / "release_metadata.json").write_text(
+        json.dumps(release_metadata, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
 
     metadata_reference_queue = queues[decision_router.METADATA_REFERENCE]
     handoff_report = {
-        "schema_version": "2.0",
+        "schema_version": "2.1",
         "package": package_name,
+        "release_id": release_metadata["release_id"],
+        "manifest_sha256": manifest_sha256,
         "producer": "paper-crawler-agent",
         "consumer": "TunnelBookAI",
         "source_root": str(source_root),
-        "package_root": str(package_root),
+        "package_root": ".",
         "input_classifications": len(rows),
         "ready_for_handoff": len(manifest),
         "metadata_references": len(metadata_reference_queue),
@@ -488,7 +575,12 @@ def export_handoff(
     ))
     (registry_root / "handoff_contract.json").write_text(
         json.dumps({
-            "schema_version": "2.0",
+            "schema_version": "2.1",
+            "release_id": release_metadata["release_id"],
+            "producer_version": release_metadata["producer_version"],
+            "producer_git_commit": release_metadata["producer_git_commit"],
+            "generated_at": release_metadata["generated_at"],
+            "manifest_sha256": manifest_sha256,
             "producer": "paper-crawler-agent",
             "consumer": "TunnelBookAI",
             "producer_responsibilities": [
@@ -529,23 +621,26 @@ def export_handoff(
                 "legacy": "Deprecated historical book-section fields, preserved for audit and ignored by all decisions.",
             },
             "state_machine": {
-                "paper_crawler_status": ["READY_FOR_HANDOFF", "METADATA_REFERENCE", "RETRY_ACQUISITION", "MANUAL_REVIEW", "AUTO_REJECT"],
+                "paper_crawler_status": ["READY_FOR_HANDOFF", "METADATA_REFERENCE", "RETRY_ACQUISITION", "RECLASSIFY", "MANUAL_REVIEW", "AUTO_REJECT"],
                 "tunnelbookai_status": ["NOT_INGESTED"],
             },
             "package_layout": {
                 "00_registry/handoff_contract.json": "this file",
+                "00_registry/release_metadata.json": "release identity and manifest fingerprint",
                 "00_registry/manifest.jsonl": "full internal manifest",
                 "00_registry/handoff_manifest.jsonl": "authoritative consumer manifest",
                 "00_registry/checksums.sha256": "byte checksums for every packaged file",
                 "01_originals/": "acquired original sources by route",
-                "99_audit/handoff_quality_gate.json": "fail-closed gate decision (GO/CONDITIONAL_GO/NO_GO)",
+                "99_audit/handoff_quality_gate.json": "fail-closed gate decision (GO/NO_GO)",
                 "99_audit/review_queue.jsonl": "records needing human judgement",
                 "99_audit/retry_acquisition.jsonl": "records to reacquire",
+                "99_audit/reclassify_queue.jsonl": "records whose source classification is incomplete",
                 "99_audit/metadata_references.jsonl": "reference metadata without ingestable content",
                 "99_audit/rejected_manifest.jsonl": "deterministic rejects with retained provenance",
             },
             "manifest": "00_registry/manifest.jsonl",
             "handoff_manifest": "00_registry/handoff_manifest.jsonl",
+            "release_metadata": "00_registry/release_metadata.json",
             "checksums": "00_registry/checksums.sha256",
             "source_tree": "01_originals",
             "audit": "99_audit/handoff_audit.json",
@@ -560,6 +655,37 @@ def export_handoff(
         }, ensure_ascii=False, indent=2), encoding="utf-8"
     )
 
+    # The package-local gate belongs to this exact manifest. Generate it before
+    # the checksum ledger so the report itself is covered without self-reference.
+    import handoff_quality_gate
+    quality_gate = handoff_quality_gate.evaluate_handoff(source_root, package_root=package_root)
+    handoff_report["quality_gate"] = quality_gate
+    (audit_root / "handoff_audit.json").write_text(
+        json.dumps(handoff_report, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    checksum_targets = [
+        str(path.relative_to(package_root))
+        for path in package_root.rglob("*")
+        if path.is_file() and path.name not in {"checksums.sha256", "RELEASE_COMPLETE.json"}
+    ]
+    checksums_path = _write_checksums(package_root, checksum_targets)
+    completion = {
+        **release_metadata,
+        "status": "COMPLETE" if quality_gate.get("decision") == "GO" else "BLOCKED",
+        "quality_gate": "99_audit/handoff_quality_gate.json",
+        "quality_gate_decision": quality_gate.get("decision"),
+        "checksums_path": "00_registry/checksums.sha256",
+        "checksums_sha256": _sha256(checksums_path),
+    }
+    (registry_root / "RELEASE_COMPLETE.json").write_text(
+        json.dumps(completion, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    handoff_report.update({
+        "package_root": str(package_root),
+        "release_metadata": release_metadata,
+        "checksums_sha256": completion["checksums_sha256"],
+    })
+
     print(f"READY_FOR_HANDOFF: {len(manifest)}")
     print(f"METADATA_REFERENCE: {len(metadata_reference_queue)}")
     print(f"Decision routes: {handoff_report['decision_counts']}")
@@ -567,16 +693,54 @@ def export_handoff(
     return handoff_report
 
 
+def create_release(
+    output_dir: str | Path,
+    *,
+    releases_root: str | Path,
+    generated_at: str | None = None,
+) -> dict[str, Any]:
+    """Build in a hidden partial directory and atomically publish a GO release."""
+    root = Path(releases_root).resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    partial = root / f".papercrawler-{uuid.uuid4().hex}.partial"
+    partial.mkdir()
+    try:
+        report = export_handoff(output_dir, destination=partial, generated_at=generated_at)
+        decision = (report.get("quality_gate") or {}).get("decision")
+        if decision != "GO":
+            raise RuntimeError(f"Release quality gate is {decision}; partial package retained at {partial}")
+        release_id = str((report.get("release_metadata") or {}).get("release_id") or "")
+        if not release_id:
+            raise RuntimeError("Release metadata did not produce a release_id")
+        final = root / release_id
+        if final.exists():
+            raise FileExistsError(f"Refusing to overwrite release: {final}")
+        partial.replace(final)
+        _make_release_readonly(final)
+        report["package_root"] = str(final)
+        return report
+    except Exception:
+        # Retain non-empty partial output for forensic inspection. Hidden partial
+        # directories are never considered completed releases.
+        raise
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Export classified PaperCrawler sources for TunnelBookAI.")
     parser.add_argument("--output-dir", default=None)
     parser.add_argument("--destination", default=None)
+    parser.add_argument("--releases-root", default=None)
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
-    export_handoff(args.output_dir, destination=args.destination)
+    if args.releases_root:
+        if args.destination:
+            raise SystemExit("--destination and --releases-root are mutually exclusive")
+        create_release(args.output_dir or harvest.OUTPUT_DIR, releases_root=args.releases_root)
+    else:
+        export_handoff(args.output_dir, destination=args.destination)
 
 
 if __name__ == "__main__":

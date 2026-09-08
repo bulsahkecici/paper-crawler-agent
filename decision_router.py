@@ -101,6 +101,11 @@ def route(record: dict[str, Any], *, source_exists: bool | None = None, sha_vali
     llm_promoted = relevance in {"STRONG", "PROBABLE"} and status == "LLM_ACCEPTED"
     acquirable = acquisition_target and (not record.get("metadata_only") or llm_promoted)
 
+    route_parts = {
+        part.upper() for part in Path(str(record.get("route_path") or "")).parts
+    }
+    source_class = str(record.get("source_class") or "").upper()
+
     if sha_valid is False:
         return _decision(AUTO_REJECT, "sha256_mismatch", "restore or reacquire the intact source")
     if manual_action == "RETRY_ACQUISITION":
@@ -113,6 +118,12 @@ def route(record: dict[str, Any], *, source_exists: bool | None = None, sha_vali
         if not exists and metadata_reference:
             return _decision(METADATA_REFERENCE, "acquisition_failed_reference_retained", "treat as REFERENCE_ONLY; do not retry automatically")
         return _decision(AUTO_REJECT, "hard_acquisition_or_security_failure", "retain failure details; do not retry automatically")
+    if "NEEDS_CLASSIFICATION" in route_parts or source_class == "UNKNOWN":
+        return _decision(
+            RECLASSIFY,
+            "source_classification_incomplete",
+            "resolve the source class and route before handoff",
+        )
     if status in REVIEW_CLASSIFICATIONS:
         ambiguous = (
             document_type == "unknown"

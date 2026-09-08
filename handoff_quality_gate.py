@@ -5,9 +5,8 @@ This gate evaluates PaperCrawler's *handoff package* only. It never evaluates a
 canonical TunnelBookAI corpus: that responsibility, and the name
 ``corpus_quality_gate``, belong to TunnelBookAI's ingest layer.
 
-Authoritative output: ``audit/handoff_quality_gate.json``.
-A deprecated compatibility alias ``audit/corpus_quality_gate.json`` is also
-written (single evaluation, no second computation).
+Authoritative output: ``<package>/99_audit/handoff_quality_gate.json``.
+The producer audit directory receives an explicitly marked compatibility copy.
 """
 
 from __future__ import annotations
@@ -52,6 +51,28 @@ def _jsonl(path: Path) -> tuple[list[dict[str, Any]], bool]:
     return rows, True
 
 
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _safe_package_file(package: Path, relative: Any) -> Path | None:
+    value = str(relative or "")
+    candidate = Path(value)
+    if not value or candidate.is_absolute() or ".." in candidate.parts:
+        return None
+    root = package.resolve()
+    resolved = (package / candidate).resolve()
+    try:
+        resolved.relative_to(root)
+    except ValueError:
+        return None
+    return resolved
+
+
 def evaluate_handoff(output_dir: str | Path, *, package_root: str | Path | None = None) -> dict[str, Any]:
     root = Path(output_dir)
     audit = root / "audit"
@@ -60,6 +81,7 @@ def evaluate_handoff(output_dir: str | Path, *, package_root: str | Path | None 
     package = Path(package_root).resolve() if package_root else root / "exports" / "TunnelBookAI_Source_Pack"
     manifest, manifest_ok = _jsonl(package / "00_registry" / "handoff_manifest.jsonl")
     contract = _json(package / "00_registry" / "handoff_contract.json")
+    release_metadata = _json(package / "00_registry" / "release_metadata.json")
     review, _ = _jsonl(package / "99_audit" / "review_queue.jsonl")
     retry, _ = _jsonl(package / "99_audit" / "retry_acquisition.jsonl")
     metadata_refs, _ = _jsonl(package / "99_audit" / "metadata_references.jsonl")
@@ -69,7 +91,9 @@ def evaluate_handoff(output_dir: str | Path, *, package_root: str | Path | None 
     blocking: list[str] = []
     warnings: list[str] = []
 
-    required_stages = {"free_discovery", "pdf_enrichment", "initial_classification", "source_audit", "handoff"}
+    # The exporter runs this gate before its caller can mark the handoff stage
+    # complete. A readable, fingerprinted manifest is the proof of this stage.
+    required_stages = {"free_discovery", "pdf_enrichment", "initial_classification", "source_audit"}
     stages = state.get("stages") or {}
     if not state or any(stages.get(stage) != "COMPLETED" for stage in required_stages):
         blocking.append("pipeline_incomplete")
@@ -82,6 +106,15 @@ def evaluate_handoff(output_dir: str | Path, *, package_root: str | Path | None 
 
     if not manifest_ok:
         blocking.append("handoff_manifest_missing_or_invalid")
+    manifest_path = package / "00_registry" / "handoff_manifest.jsonl"
+    manifest_sha256 = _sha256(manifest_path) if manifest_path.is_file() else ""
+    declared_fingerprints = [
+        str(value) for value in (
+            contract.get("manifest_sha256"), release_metadata.get("manifest_sha256")
+        ) if value
+    ]
+    if declared_fingerprints and any(value != manifest_sha256 for value in declared_fingerprints):
+        blocking.append("manifest_fingerprint_mismatch")
 
     canonical_ids = [str(row.get("canonical_id") or row.get("canonical_hint_id") or "") for row in manifest]
     if "" in canonical_ids or len(canonical_ids) != len(set(canonical_ids)):
@@ -103,21 +136,53 @@ def evaluate_handoff(output_dir: str | Path, *, package_root: str | Path | None 
     presentation_asset_count = 0
     presentation_asset_sha_failures = 0
     presentation_asset_provenance_missing = 0
+    normalized_sha_failures = 0
+    unsafe_paths = 0
+    needs_classification_marked_ready = 0
     for row in manifest:
         status = str(row.get("paper_crawler_status") or "READY_FOR_HANDOFF").upper()
         if status != "READY_FOR_HANDOFF" or row.get("metadata_only_official_exception"):
             metadata_reference_marked_ready += 1
-        local_path = package / str(row.get("local_path") or row.get("source_path") or "")
-        if not str(row.get("local_path") or row.get("source_path") or "") or not local_path.is_file():
+        representation = row.get("source_representation")
+        if not isinstance(representation, dict):
+            representation = {}
+            source_representation_missing += 1
+        authoritative_rel = representation.get("original_or_raw") or row.get("local_path") or row.get("source_path")
+        authoritative_sha = representation.get("original_or_raw_sha256") or row.get("sha256")
+        local_path = _safe_package_file(package, authoritative_rel)
+        if local_path is None:
+            unsafe_paths += 1
+        if local_path is None or not local_path.is_file():
             blocking.append("handoff_file_missing")
         else:
-            actual = hashlib.sha256(local_path.read_bytes()).hexdigest()
-            if actual != str(row.get("sha256") or ""):
+            actual = _sha256(local_path)
+            if not authoritative_sha or actual != str(authoritative_sha):
                 sha_failures += 1
+        if str(row.get("schema_version") or "2.0") != "2.0":
+            if row.get("local_path") != authoritative_rel or row.get("sha256") != authoritative_sha:
+                blocking.append("authoritative_source_fields_inconsistent")
+            if not representation.get("original_or_raw_sha256"):
+                blocking.append("authoritative_source_sha256_missing")
+        normalized_rel = representation.get("crawler_normalized")
+        if normalized_rel:
+            normalized_path = _safe_package_file(package, normalized_rel)
+            normalized_sha = str(representation.get("crawler_normalized_sha256") or "")
+            if normalized_path is None:
+                unsafe_paths += 1
+            if (
+                normalized_path is None
+                or not normalized_path.is_file()
+                or not normalized_sha
+                or _sha256(normalized_path) != normalized_sha
+            ):
+                normalized_sha_failures += 1
+            if str(representation.get("crawler_normalized_status") or "").upper() != "PROVISIONAL":
+                blocking.append("crawler_normalized_not_provisional")
         if not row.get("provenance"):
             missing_provenance += 1
-        if "source_representation" not in row:
-            source_representation_missing += 1
+        route_parts = {part.upper() for part in Path(str(row.get("route_path") or "")).parts}
+        if "NEEDS_CLASSIFICATION" in route_parts:
+            needs_classification_marked_ready += 1
         chapter_fields_in_handoff += sum(key in row for key in ("primary_section", "book_sections", "provisional_primary_section", "provisional_secondary_sections", "final_primary_section", "final_secondary_sections", "final_section_status"))
         evidence = str(row.get("crawler_evidence_level") or row.get("evidence_level") or "").upper()
         if evidence in FORBIDDEN_CRAWLER_EVIDENCE_LEVELS:
@@ -125,11 +190,12 @@ def evaluate_handoff(output_dir: str | Path, *, package_root: str | Path | None 
         for asset in row.get("presentation_assets") or []:
             presentation_asset_count += 1
             asset_rel = str(asset.get("path") or "")
-            if not asset_rel or asset_rel.startswith("/") or ".." in Path(asset_rel).parts:
+            asset_path = _safe_package_file(package, asset_rel)
+            if asset_path is None:
                 presentation_asset_sha_failures += 1
+                unsafe_paths += 1
                 continue
-            asset_path = package / asset_rel
-            if not asset_path.is_file() or hashlib.sha256(asset_path.read_bytes()).hexdigest() != str(asset.get("sha256") or ""):
+            if not asset_path.is_file() or _sha256(asset_path) != str(asset.get("sha256") or ""):
                 presentation_asset_sha_failures += 1
             if not (asset.get("source_url") and asset.get("deck_sha256") and asset.get("slide_number")):
                 presentation_asset_provenance_missing += 1
@@ -147,6 +213,12 @@ def evaluate_handoff(output_dir: str | Path, *, package_root: str | Path | None 
         blocking.append("metadata_reference_marked_ready")
     if source_representation_missing:
         blocking.append("source_representation_missing")
+    if normalized_sha_failures:
+        blocking.append("crawler_normalized_sha256_mismatch_or_missing")
+    if unsafe_paths:
+        blocking.append("unsafe_package_path")
+    if needs_classification_marked_ready:
+        blocking.append("needs_classification_marked_ready")
     if chapter_fields_in_handoff:
         blocking.append("chapter_fields_present_in_handoff")
     if invalid_fulltext_claim:
@@ -181,11 +253,14 @@ def evaluate_handoff(output_dir: str | Path, *, package_root: str | Path | None 
         warnings.append("manual_review_queue_above_100")
 
     evidence_counts = Counter(str(row.get("crawler_evidence_level") or row.get("evidence_level") or "UNKNOWN") for row in index)
-    decision = "NO_GO" if blocking else ("CONDITIONAL_GO" if warnings else "GO")
+    decision = "NO_GO" if blocking else "GO"
     result = {
         "gate": "handoff_quality_gate",
         "gate_meaning": "READY_FOR_HANDOFF means a safe, integrity-checked source package for TunnelBookAI ingest; it is not canonical evidence and not a canonical corpus.",
         "decision": decision,
+        "advisory_status": "WARNINGS" if warnings else "CLEAR",
+        "release_id": release_metadata.get("release_id") or contract.get("release_id"),
+        "manifest_sha256": manifest_sha256,
         "total_records": len(index),
         "handoff_records": len(manifest),
         "ready_for_handoff": len(manifest),
@@ -208,17 +283,25 @@ def evaluate_handoff(output_dir: str | Path, *, package_root: str | Path | None 
         "presentation_assets": presentation_asset_count,
         "presentation_asset_sha_failures": presentation_asset_sha_failures,
         "presentation_asset_provenance_missing": presentation_asset_provenance_missing,
+        "crawler_normalized_sha_failures": normalized_sha_failures,
+        "unsafe_paths": unsafe_paths,
+        "needs_classification_marked_ready": needs_classification_marked_ready,
         "blocking_issues": sorted(set(blocking)),
         "warnings": sorted(set(warnings)),
     }
+    package_audit = package / "99_audit"
+    package_audit.mkdir(parents=True, exist_ok=True)
+    (package_audit / "handoff_quality_gate.json").write_text(
+        json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
     audit.mkdir(parents=True, exist_ok=True)
-    (audit / "handoff_quality_gate.json").write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
     alias = {
-        "deprecated_alias": True,
-        "canonical_artifact": "audit/handoff_quality_gate.json",
-        "note": "PaperCrawler evaluates only its handoff package. 'corpus_quality_gate' belongs to TunnelBookAI.",
+        "compatibility_copy": True,
+        "canonical_artifact": "99_audit/handoff_quality_gate.json",
+        "note": "Copy of the package-local handoff gate; the release artifact is authoritative.",
         **result,
     }
+    (audit / "handoff_quality_gate.json").write_text(json.dumps(alias, ensure_ascii=False, indent=2), encoding="utf-8")
     (audit / "corpus_quality_gate.json").write_text(json.dumps(alias, ensure_ascii=False, indent=2), encoding="utf-8")
     return result
 

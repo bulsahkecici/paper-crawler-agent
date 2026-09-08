@@ -285,7 +285,9 @@ def main() -> None:
     _log("run summary started")
     summary = run_summary.write(args.output_dir)
     _log("handoff quality gate started")
-    quality_gate = handoff_quality_gate.evaluate_handoff(root, package_root=args.destination)
+    quality_gate = handoff.get("quality_gate") or handoff_quality_gate.evaluate_handoff(
+        root, package_root=args.destination
+    )
     run_manifest.finish(manifest_context, root, summary=summary, decision=quality_gate)
     report = {
         "discovery": discovery_report,
